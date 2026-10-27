@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RioServer NG</title>
+  <meta name="color-scheme" content="dark light">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2311161a'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%235ef2d0' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%235ef2d0'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#/artists">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>RioServer <b>NG</b></span>
+      </a>
+      <nav class="nav" aria-label="Library">
+        <a href="#/artists" data-nav="artists">Artists</a>
+        <a href="#/albums" data-nav="albums">Albums</a>
+        <a href="#/songs" data-nav="songs">Songs</a>
+        <a href="#/genres" data-nav="genres">Genres</a>
+        <a href="#/playlists" data-nav="playlists">Playlists</a>
+        <a href="#/recent" data-nav="recent">Recently Added</a>
+      </nav>
+      <nav class="nav nav-secondary" aria-label="System">
+        <a href="#/receivers" data-nav="receivers">Receivers <span class="pill" id="receiver-count" hidden></span></a>
+        <a href="#/library" data-nav="library">Library &amp; Firmware</a>
+      </nav>
+      <div class="sidebar-foot" id="library-status"></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" id="menu-btn" aria-label="Menu">
+          <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <div class="search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+          <input id="search" type="search" placeholder="Search artists, albums and songs" autocomplete="off">
+        </div>
+        <label class="target">
+          <span>Play on</span>
+          <select id="target"><option value="">This browser</option></select>
+        </label>
+      </header>
+      <section class="view" id="view" tabindex="-1"></section>
+    </main>
+  </div>
+
+  <footer class="player" id="player">
+    <div class="np">
+      <div class="np-art" id="np-art"></div>
+      <div class="np-text">
+        <div class="np-title" id="np-title">Nothing playing</div>
+        <div class="np-sub" id="np-sub">Pick something from your library</div>
+      </div>
+    </div>
+    <div class="transport">
+      <div class="buttons">
+        <button class="icon-btn" id="btn-shuffle" aria-label="Shuffle" title="Shuffle">
+          <svg viewBox="0 0 24 24"><path d="M3 7h3c4 0 6 10 10 10h4M17 14l3 3-3 3M3 17h3c1.6 0 2.8-1.5 3.9-3.3M13.5 9.8C14.4 8.3 15.4 7 17 7h3M17 4l3 3-3 3"/></svg>
+        </button>
+        <button class="icon-btn" id="btn-prev" aria-label="Previous">
+          <svg viewBox="0 0 24 24"><path d="M6 5v14M19 5 9 12l10 7z" class="fill"/></svg>
+        </button>
+        <button class="play-btn" id="btn-play" aria-label="Play">
+          <svg viewBox="0 0 24 24" class="i-play"><path d="M7 4.5v15l13-7.5z" class="fill"/></svg>
+          <svg viewBox="0 0 24 24" class="i-pause"><path d="M7 4h3.5v16H7zM13.5 4H17v16h-3.5z" class="fill"/></svg>
+        </button>
+        <button class="icon-btn" id="btn-next" aria-label="Next">
+          <svg viewBox="0 0 24 24"><path d="M18 5v14M5 5l10 7-10 7z" class="fill"/></svg>
+        </button>
+        <button class="icon-btn" id="btn-repeat" aria-label="Repeat" title="Repeat">
+          <svg viewBox="0 0 24 24"><path d="M4 11V9a3 3 0 0 1 3-3h12l-3-3M20 13v2a3 3 0 0 1-3 3H5l3 3"/></svg>
+        </button>
+      </div>
+      <div class="scrub">
+        <span id="t-pos">0:00</span>
+        <input type="range" id="seek" min="0" max="1000" value="0" aria-label="Seek">
+        <span id="t-dur">0:00</span>
+      </div>
+    </div>
+    <div class="volume">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z" class="fill"/><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/></svg>
+      <input type="range" id="volume" min="0" max="100" value="80" aria-label="Volume">
+    </div>
+  </footer>
+  <audio id="audio" preload="auto"></audio>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

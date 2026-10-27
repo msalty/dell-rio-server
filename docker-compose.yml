@@ -1,0 +1,29 @@
+services:
+  rioserver:
+    build: .
+    image: rioserver-ng
+    container_name: rioserver
+    # Receivers find the server with UDP broadcasts and boot over NFS, so the
+    # container has to sit directly on your LAN.
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      # Your MP3 collection (read-only is fine). Change the left-hand side.
+      - /path/to/your/music:/music:ro
+      # Library database, settings and any firmware images you add.
+      - rio-data:/data
+    environment:
+      # Address receivers should use to reach this server. Leave empty to
+      # detect it automatically; set it if the host has several networks.
+      RIO_SERVER_IP: ""
+      # Web interface port (the Rio protocol stays on 12078).
+      RIO_WEB_PORT: "8080"
+      # If the host already runs rpcbind on port 111 (e.g. it is an NFS
+      # client or server), move ours aside; receivers then fall back to the
+      # standard mountd/NFS ports 627 and 2049 directly.
+      # RIO_PORTMAP_PORT: "11111"
+      # Use polling instead of inotify for network shares (SMB/NFS mounts).
+      # RIO_WATCH_POLLING: "1"
+
+volumes:
+  rio-data:
