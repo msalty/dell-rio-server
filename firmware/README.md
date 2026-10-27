@@ -34,6 +34,7 @@ The result is one static ~125 KB executable that runs as `/sbin/init`.
 | `tools/fetch_deps.py` | downloads libmad and RioPlay's kernel image (checksummed) |
 | `tools/mkarf.py` | packs the firmware image |
 | `tools/simulate.py` | runs the firmware under `qemu-arm` with simulated hardware |
+| `tools/cpubench.py`, `bench/` | measures decode and UI CPU cost (see below) |
 
 ## Simulator
 
@@ -45,6 +46,23 @@ python3 tools/simulate.py build/init 127.0.0.1:12078 --keys select,select,down,s
 The binary is identical to the one that runs on the receiver. Only the
 devices are replaced, by files named in the `RIO_SIM_*` environment
 variables (see `src/hw.h`).
+
+## CPU budget
+
+qemu runs the firmware much faster than the receiver's 74 MHz ARM720T, so
+it can't reveal CPU starvation. `tools/cpubench.py` (needs ffmpeg and
+`pip install unicorn`) runs the decode path from `bench/bench.c` under the
+Unicorn emulator and counts instructions per second of audio:
+
+```
+decode                                 15.2 M instructions per second of audio (38% of ~40 MIPS)
+one Now Playing render                 0.15 M instructions
+```
+
+Anything that runs once per MP3 frame (about 38 times a second) has to stay
+cheap. An early version shifted the whole 96 KB input buffer after every
+frame. That roughly doubled the CPU load and was the likely cause of
+audio dropouts seen on a real receiver.
 
 ## Licence
 

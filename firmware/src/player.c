@@ -385,20 +385,17 @@ static void fill_from_network(int *busy)
 {
     if (fd < 0 || eof)
         return;
-    if (in_end >= INBUF_SIZE && in_start > 0) {
+    /* Reclaim consumed space only in large steps. Shifting the buffer after
+     * every frame (as this once did) nearly doubled the CPU playback needs,
+     * which the receiver's 74 MHz ARM can't spare. While
+     * the buffer is full with less than half of it consumed, just don't read. */
+    if (in_start >= INBUF_SIZE / 2) {
         memmove(inbuf, inbuf + in_start, (size_t)(in_end - in_start));
         in_end -= in_start;
         in_start = 0;
         rebuffer = 1;
     }
     int space = INBUF_SIZE - in_end;
-    if (space < 4096 && in_start > INBUF_SIZE / 2) {
-        memmove(inbuf, inbuf + in_start, (size_t)(in_end - in_start));
-        in_end -= in_start;
-        in_start = 0;
-        rebuffer = 1;
-        space = INBUF_SIZE - in_end;
-    }
     if (space <= 0)
         return;
     int n = net_recv(fd, inbuf + in_end, space);

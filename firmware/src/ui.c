@@ -711,7 +711,9 @@ void ui_poll_server(void)
              net_mac(), standby ? "standby" : states[P.state],
              (unsigned long)(P.have_track ? P.cur.fid : 0), (unsigned long)player_position_ms(),
              P.volume, P.qi, P.qlen, P.shuffle, repeats[P.repeat]);
-    int n = http_get(path, buf, sizeof(buf), 1500);
+    /* Short timeout: this blocks the main loop, and audio must keep flowing
+     * even if the server is slow. A missed poll is simply retried. */
+    int n = http_get(path, buf, sizeof(buf), 400);
     if (n <= 0)
         return;
     for (char *line = buf; line && *line;) {
