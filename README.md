@@ -70,6 +70,17 @@ docker run -d --name rioserver --network host --restart unless-stopped \
   -v /srv/music:/music:ro -v rio-data:/data rioserver-ng
 ```
 
+### Umbrel
+
+RioServer NG is in the [msalty Umbrel community app store](https://github.com/msalty/msalty-umbrel).
+In umbrelOS, open **App Store › ⋯ › Community App Stores**, add
+`https://github.com/msalty/msalty-umbrel`, and install **RioServer NG**. Put
+your MP3s in **Files › Downloads › music**. The web interface is on port 12078.
+
+The app uses the multi-arch image `ghcr.io/msalty/dell-rio-server`, which
+`.github/workflows/publish.yml` builds for every push to `main` and every
+`v*` tag.
+
 ## Requirements on your network
 
 - **DHCP.** Receivers get their address from DHCP, so a normal home router is

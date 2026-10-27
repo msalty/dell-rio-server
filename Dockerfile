@@ -6,7 +6,9 @@
 # Stage 1 cross-compiles the receiver firmware; stage 2 is the server.
 
 # Ubuntu 24.04 ships arm-none-eabi-gcc 13.2, the compiler the firmware is tested with.
-FROM ubuntu:24.04 AS firmware
+# The firmware runs on the receiver, not the server, so this stage always runs
+# natively on the build machine, even when building an arm64 server image.
+FROM --platform=$BUILDPLATFORM ubuntu:24.04 AS firmware
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc-arm-none-eabi make python3 ca-certificates \
  && rm -rf /var/lib/apt/lists/*
