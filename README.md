@@ -29,8 +29,8 @@ RioServer NG runs in Docker. It provides:
 
 ![Receiver UI](docs/receiver-ui.png)
 
-*The RioServer NG firmware running under emulation, shown on the receiver's
-128×64 display.*
+*The RioServer NG firmware's screens on the receiver's 128×64 display
+(captured from the emulator used by the tests).*
 
 ![Web interface](docs/web-artist.png)
 
@@ -214,20 +214,15 @@ above.
 Like the original server, the music protocol, network boot and web interface
 have no authentication. Run the server only on a trusted home network.
 
-## Status and limitations
+## Status
 
-Everything here has been tested in emulation: the server's boot, NFS,
-protocol and web paths, and the firmware under qemu against a live server
-(menus, MP3 decoding, playback order, remote control, and a full SSDP → NFS →
-firmware-discovers-server boot rehearsal against the Docker container). **It
-has not been run on a physical receiver yet**, so expect some rough edges on
-real hardware. In particular:
+**Tested on real hardware.** A physical receiver network-boots the RioServer
+NG firmware from the Docker container, browses the library and plays music.
 
-- Audio and display device behaviour is taken from RioPlay's source, which
-  ran on these receivers. Decoding speed on the receiver's 74 MHz ARM is
-  untested; RioPlay used the same decoder (libmad).
-- The protocol details come from JReceiver and RioPlay, both of which worked
-  with real receivers.
+The automated tests also exercise everything in emulation: the server's boot,
+NFS, protocol and web paths, and the firmware under qemu against a live
+server (menus, MP3 decoding, playback order, remote control, and a full
+SSDP → NFS → firmware-discovers-server boot).
 
 If something misbehaves, check the server log with `RIO_LOG_LEVEL=DEBUG`;
 the firmware also logs to the receiver's serial console.
