@@ -222,6 +222,17 @@ async def test_firmware_listing_select_and_download(library, tmp_path):
         assert r.status == 200 and (await r.read()) == make_arf()
 
 
+async def test_installable_web_app(client):
+    # The service worker must come from the root to control the whole site.
+    r = await client.get("/sw.js")
+    assert r.status == 200 and r.headers["Cache-Control"] == "no-cache"
+    manifest = await (await client.get("/static/manifest.json")).json()
+    assert manifest["display"] == "standalone" and manifest["start_url"] == "/"
+    for icon in manifest["icons"]:
+        assert (await client.get(icon["src"])).status == 200
+    assert 'rel="manifest"' in await (await client.get("/")).text()
+
+
 # ---- remote control from the web interface ------------------------------
 
 async def _ng_receiver(client, wake=0):

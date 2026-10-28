@@ -43,7 +43,12 @@ def build_app(ctx: Context) -> web.Application:
     async def index(request: web.Request) -> web.FileResponse:
         return web.FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
+    async def service_worker(request: web.Request) -> web.FileResponse:
+        # Served from the root so it may control the whole site, not just /static/.
+        return web.FileResponse(STATIC_DIR / "sw.js", headers={"Cache-Control": "no-cache"})
+
     app.router.add_get("/", index)
+    app.router.add_get("/sw.js", service_worker)
     app.router.add_static("/static/", STATIC_DIR, show_index=False)
     return app
 

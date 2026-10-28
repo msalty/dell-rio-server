@@ -862,3 +862,7 @@ pollStatus();
 pollReceivers();
 schedulePoll();
 renderNowPlaying();
+
+// Lets phones install the web interface as an app. Browsers only allow this
+// over HTTPS (or on localhost); elsewhere navigator.serviceWorker is missing.
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});

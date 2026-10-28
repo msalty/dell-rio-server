@@ -83,6 +83,19 @@ The app uses the multi-arch image `ghcr.io/msalty/dell-rio-server`, which
 `.github/workflows/publish.yml` builds for every push to `main` and every
 `v*` tag.
 
+### On your phone
+
+The web interface can be installed as an app, with its own home-screen icon
+and no browser bars:
+
+- **iPhone and iPad:** open the web interface in Safari, tap **Share › Add to
+  Home Screen**.
+- **Android:** open it in Chrome, tap **⋮ › Add to Home screen › Install**.
+  Chrome only installs apps from HTTPS addresses. Over plain
+  `http://<server>:8080/` it adds a shortcut that opens in a browser tab
+  instead. To get the full app, put the server behind an HTTPS reverse proxy
+  (for example Caddy, or `tailscale serve` if you use Tailscale).
+
 ## Requirements on your network
 
 - **DHCP.** Receivers get their address from DHCP, so a normal home router is
