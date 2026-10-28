@@ -5,6 +5,7 @@
 #define SYS_SOCKET 1
 #define SYS_BIND 2
 #define SYS_CONNECT 3
+#define SYS_GETSOCKNAME 6
 #define SYS_SEND 9
 #define SYS_RECV 10
 #define SYS_SENDTO 11
@@ -21,6 +22,7 @@
 #define SIOCGIFHWADDR 0x8927
 
 #define SSDP_PORT 21075
+#define WAKE_PORT 21076
 static const char ssdp_request[] = "upnp:uuid:1D274DB0-F053-11d3-BF72-0050DA689B2F";
 
 struct sockaddr_in {
@@ -200,6 +202,46 @@ static int ssdp_once(int timeout_ms)
     }
     sys_close(fd);
     return found;
+}
+
+int net_wake_open(int *port)
+{
+    int fd = sock(SOCK_DGRAM);
+    if (fd < 0)
+        return -1;
+    struct sockaddr_in local = {AF_INET, htons(WAKE_PORT), 0, {0}};
+    long b[3] = {fd, (long)&local, sizeof(local)};
+    if (sys_socketcall(SYS_BIND, b) < 0) {
+        local.port = 0; /* taken (e.g. several simulated receivers): any port */
+        if (sys_socketcall(SYS_BIND, b) < 0) {
+            sys_close(fd);
+            return -1;
+        }
+    }
+    int len = sizeof(local);
+    long g[3] = {fd, (long)&local, (long)&len};
+    if (sys_socketcall(SYS_GETSOCKNAME, g) < 0) {
+        sys_close(fd);
+        return -1;
+    }
+    *port = htons(local.port);
+    net_set_nonblocking(fd, 1);
+    return fd;
+}
+
+int net_wake_drain(int fd)
+{
+    int woken = 0;
+    for (;;) {
+        char buf[64];
+        struct sockaddr_in from;
+        int len = sizeof(from);
+        long r[6] = {fd, (long)buf, sizeof(buf), 0, (long)&from, (long)&len};
+        if ((int)sys_socketcall(SYS_RECVFROM, r) < 0)
+            return woken;
+        if (from.addr == g_server.ip)
+            woken = 1;
+    }
 }
 
 int net_discover(int attempts)

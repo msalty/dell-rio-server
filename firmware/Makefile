@@ -5,7 +5,8 @@
 #   make init       build just the player binary (build/init)
 #   make clean
 #
-# Requires arm-none-eabi-gcc (any recent version) and python3.
+# Requires arm-none-eabi-gcc (any recent version) and python3, plus zopfli
+# to replace the kernel's DELL/Rio splash screens with the RioServer NG logo.
 
 CROSS   ?= arm-none-eabi-
 CC      := $(CROSS)gcc
@@ -65,8 +66,8 @@ $(BUILD)/init: $(FW_OBJ) $(MAD_OBJ)
 	python3 tools/elf_oabi.py $@
 	$(CROSS)size $@
 
-$(BUILD)/receiver-ng.arf: $(BUILD)/init $(KERNEL_ARF) tools/mkarf.py
-	python3 tools/mkarf.py --kernel-from $(KERNEL_ARF) --init $(BUILD)/init -o $@
+$(BUILD)/receiver-ng.arf: $(BUILD)/init $(KERNEL_ARF) tools/mkarf.py tools/kernel_splash.py $(wildcard art/*.pbm)
+	python3 tools/mkarf.py --kernel-from $(KERNEL_ARF) --init $(BUILD)/init --splash art -o $@
 
 # CPU benchmark (see tools/cpubench.py, which generates bench_mp3.c and runs it)
 $(BUILD)/obj/bench.o: bench/bench.c $(wildcard src/*.h) $(LIBMAD_DIR)/mad.h

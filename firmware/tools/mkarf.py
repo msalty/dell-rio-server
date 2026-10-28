@@ -3,7 +3,8 @@
 The image is a tar archive of the receiver's root filesystem, served to the
 receiver over NFS. It contains:
 
-  /zImage         Linux 2.2.14 kernel for the receiver (from RioPlay)
+  /zImage         Linux 2.2.14 kernel for the receiver (from RioPlay), with
+                  its splash screens replaced (see kernel_splash.py)
   /il-binary.o    HomePNA network driver loaded by the kernel (from RioPlay)
   /sbin/init      the RioServer NG player (statically linked, no libc)
   /dev/...        device nodes for the display, IR, audio and console
@@ -14,8 +15,12 @@ from __future__ import annotations
 
 import argparse
 import io
+import sys
 import tarfile
 import time
+from pathlib import Path
+
+import kernel_splash
 
 DEVICES = [
     # name, major, minor
@@ -40,6 +45,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--kernel-from", required=True, help="existing .arf to take zImage/il-binary.o from")
     ap.add_argument("--init", required=True, help="player binary to install as /sbin/init")
+    ap.add_argument("--splash", help="directory of splash screens to put in the kernel")
     ap.add_argument("-o", "--output", required=True)
     args = ap.parse_args()
 
@@ -62,7 +68,13 @@ def main() -> None:
             m = members.get(name)
             if m is None:
                 raise SystemExit(f"{args.kernel_from} has no {name}")
-            add_file("./" + name, src.extractfile(m).read(), 0o644)
+            data = src.extractfile(m).read()
+            if name == "zImage" and args.splash:
+                try:
+                    data = kernel_splash.patch(data, kernel_splash.load_screens(Path(args.splash)))
+                except kernel_splash.SplashError as exc:
+                    print(f"warning: keeping the kernel's own splash screens: {exc}", file=sys.stderr)
+            add_file("./" + name, data, 0o644)
         for d in ("bin", "dev", "etc", "proc", "sbin", "tmp"):
             add_dir(f"./{d}/")
         with open(args.init, "rb") as f:

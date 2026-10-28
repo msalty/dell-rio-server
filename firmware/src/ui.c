@@ -12,11 +12,12 @@
 #include "ui.h"
 #include "gfx.h"
 #include "hw.h"
+#include "logo.h"
 #include "net.h"
 #include "player.h"
 #include "sys.h"
 
-#define VERSION "1.0"
+#define VERSION "1.1"
 #define WIN 24
 #define ROWS 4
 #define ROW_H 13
@@ -51,6 +52,7 @@ static int dirty = 1;
 static uint32_t last_key, marquee_start, vol_until, last_render;
 static int backlight_on = 1, backlight_auto = 1, standby;
 static uint32_t lib_version;
+static int wake_port;
 static char menu_error[48];
 
 /* ---- helpers ----------------------------------------------------------- */
@@ -423,17 +425,32 @@ static void render(void)
     dirty = 0;
 }
 
-void ui_boot_screen(const char *line1, const char *line2)
+/* The logo sits where the kernel's splash screen draws it (tools/mklogo.py),
+ * so the hand-over from kernel to firmware is seamless. */
+static void draw_boot_screen(const char *line1, const char *line2, int glint)
 {
     gfx_clear();
-    gfx_text_center(&font_large, 8, "Rio", 3);
-    gfx_text_center(&font_small, 26, "RioServer NG " VERSION, 2);
-    gfx_hline(24, 37, 80, 1);
+    gfx_bitmap(logo_data, LOGO_W, LOGO_H, 0, 0, glint);
     if (line1)
-        gfx_text_center(&font_medium, 39, line1, 3);
+        gfx_text_center(&font_medium, line2 ? 40 : 45, line1, 3);
     if (line2)
-        gfx_text_center(&font_small, 53, line2, 2);
+        gfx_text_center(&font_small, 54, line2, 2);
     display_push();
+}
+
+void ui_boot_screen(const char *line1, const char *line2)
+{
+    draw_boot_screen(line1, line2, GLINT_NONE);
+}
+
+void ui_boot_intro(const char *line1)
+{
+    /* a bright band sweeps across the logo, like the display warming up */
+    for (int g = -12; g < LOGO_W + 12; g += 6) {
+        draw_boot_screen(line1, 0, g);
+        sys_nanosleep(25);
+    }
+    draw_boot_screen(line1, 0, GLINT_NONE);
 }
 
 /* ---- actions ----------------------------------------------------------- */
@@ -701,21 +718,22 @@ static void run_command(char **f, int nf)
     dirty = 1;
 }
 
-void ui_poll_server(void)
+int ui_poll_server(void)
 {
     static const char *const states[] = {"stop", "buffer", "play", "pause"};
     static const char *const repeats[] = {"off", "all", "one"};
     char path[256], buf[2048];
     snprintf(path, sizeof(path),
-             "/ng/poll?mac=%s&st=%s&id=%lx&pos=%lu&vol=%d&qi=%d&qn=%d&shuf=%d&rep=%s&ver=" VERSION,
+             "/ng/poll?mac=%s&st=%s&id=%lx&pos=%lu&vol=%d&qi=%d&qn=%d&shuf=%d&rep=%s&wake=%d&ver=" VERSION,
              net_mac(), standby ? "standby" : states[P.state],
              (unsigned long)(P.have_track ? P.cur.fid : 0), (unsigned long)player_position_ms(),
-             P.volume, P.qi, P.qlen, P.shuffle, repeats[P.repeat]);
+             P.volume, P.qi, P.qlen, P.shuffle, repeats[P.repeat], wake_port);
     /* Short timeout: this blocks the main loop, and audio must keep flowing
      * even if the server is slow. A missed poll is simply retried. */
     int n = http_get(path, buf, sizeof(buf), 400);
     if (n <= 0)
-        return;
+        return 0;
+    int commands = 0;
     for (char *line = buf; line && *line;) {
         char *next = strchr(line, '\n');
         if (next)
@@ -738,15 +756,18 @@ void ui_poll_server(void)
             lib_version = v;
         } else if (nf >= 2 && !strcmp(f[0], "cmd")) {
             run_command(f, nf);
+            commands++;
         }
         line = next;
     }
+    return commands;
 }
 
 /* ---- main hooks -------------------------------------------------------- */
 
-void ui_init(void)
+void ui_init(int wake)
 {
+    wake_port = wake;
     depth = 0;
     push_level("root", "Music", 0);
     last_key = time_ms();

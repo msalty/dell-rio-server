@@ -32,6 +32,7 @@ const ICON = {
   next: '<svg viewBox="0 0 24 24"><path d="M18 5v14M5 5l10 7-10 7z" class="fill"/></svg>',
   pause: '<svg viewBox="0 0 24 24"><path d="M7 4h3.5v16H7zM13.5 4H17v16h-3.5z" class="fill"/></svg>',
   stop: '<svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z" class="fill"/></svg>',
+  moon: '<svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>',
 };
 const icon = (name) => h("span", { html: ICON[name], style: "display:inline-flex" });
 
@@ -72,6 +73,20 @@ function placeholder(text) {
     style: `background: linear-gradient(135deg, hsl(${hue} 55% 42%), hsl(${(hue + 50) % 360} 60% 28%))`,
   }, initials(text));
 }
+// Stand-in for an artist without any artwork: a record whose label colour
+// and initials come from the name.
+function vinyl(text) {
+  return h("div", { class: "vinyl", style: `--hue: ${hashHue(text)}` }, h("span", {}, initials(text)));
+}
+// The artist's photo (artist.jpg in their folder) or their newest cover.
+function artistArt(a, cls = "avatar") {
+  const el = h("div", { class: cls });
+  const img = h("img", { src: `/api/art/artist/${a.id}`, alt: "", loading: "lazy" });
+  img.addEventListener("error", () => img.replaceWith(vinyl(a.name)));
+  el.append(img);
+  return el;
+}
+
 function cover(albumId, title, extra) {
   const el = h("div", { class: "cover" });
   if (albumId) {
@@ -92,6 +107,36 @@ function toast(msg) {
   t.classList.add("show");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+// A slider the user is dragging (or just let go of) must not be moved by
+// state polled from a receiver, which lags behind what they asked for.
+function trackBusy(input) {
+  const touch = () => { input._busyUntil = Date.now() + 1500; };
+  input.addEventListener("pointerdown", () => { input._held = true; touch(); });
+  input.addEventListener("pointerup", () => { input._held = false; touch(); });
+  input.addEventListener("pointercancel", () => { input._held = false; touch(); });
+  input.addEventListener("input", touch);
+  return input;
+}
+const isBusy = (input) => !!input && (input._held || Date.now() < (input._busyUntil || 0));
+
+// Sends a receiver volume while the slider moves: at most every 150 ms, and
+// always the final value. The server drops values the receiver hasn't
+// collected yet, so nothing piles up.
+function volumeSender(getIp) {
+  let last = 0, timer = null, value = null;
+  const send = () => {
+    timer = null;
+    last = Date.now();
+    post(`/api/receivers/${getIp()}/command`, { cmd: "vol", value }).catch((e) => toast(e.message));
+  };
+  return (v) => {
+    value = v;
+    const wait = 150 - (Date.now() - last);
+    if (wait <= 0 && !timer) send();
+    else if (!timer) timer = setTimeout(send, Math.max(0, wait));
+  };
 }
 
 // ---------------------------------------------------------------- player
@@ -165,7 +210,7 @@ const Player = {
   async command(cmd, value) {
     try {
       await post(`/api/receivers/${this.target}/command`, value === undefined ? { cmd } : { cmd, value });
-      setTimeout(pollReceivers, 600);
+      setTimeout(pollReceivers, 350); // the receiver collects commands at once
     } catch (e) {
       toast(e.message);
     }
@@ -183,6 +228,12 @@ audio.volume = Number(localStorage.getItem("rio.volume") || 80) / 100;
 $("#volume").value = Math.round(audio.volume * 100);
 
 $("#btn-play").addEventListener("click", () => Player.toggle());
+for (const el of [$("#np-title"), $("#np-art")]) {
+  el.addEventListener("click", () => {
+    const album = $("#np-title").dataset.album;
+    if (album) location.hash = `#/albums/${album}`;
+  });
+}
 $("#btn-next").addEventListener("click", () => Player.next());
 $("#btn-prev").addEventListener("click", () => Player.prev());
 $("#btn-shuffle").addEventListener("click", () => {
@@ -205,22 +256,55 @@ $("#seek").addEventListener("input", (e) => {
     audio.currentTime = frac * audio.duration;
   }
 });
+trackBusy($("#volume"));
+const sendTargetVolume = volumeSender(() => Player.target);
 $("#volume").addEventListener("input", (e) => {
   const v = Number(e.target.value);
   if (Player.target) {
-    clearTimeout(Player._volTimer);
-    Player._volTimer = setTimeout(() => Player.command("vol", v), 150);
+    sendTargetVolume(v);
   } else {
     audio.volume = v / 100;
     localStorage.setItem("rio.volume", v);
   }
 });
+// Space play/pause, N/P next/previous, +/- volume, / search.
+function nudgeVolume(delta) {
+  const slider = $("#volume");
+  slider.value = Math.max(0, Math.min(100, Number(slider.value) + delta));
+  slider.dispatchEvent(new Event("input"));
+}
 document.addEventListener("keydown", (e) => {
-  if (e.code === "Space" && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) {
+  if (e.ctrlKey || e.metaKey || e.altKey || /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
+  const action = {
+    " ": () => Player.toggle(), n: () => Player.next(), p: () => Player.prev(),
+    "+": () => nudgeVolume(5), "=": () => nudgeVolume(5), "-": () => nudgeVolume(-5),
+    "/": () => $("#search").focus(),
+  }[e.key.toLowerCase()];
+  if (action) {
     e.preventDefault();
-    Player.toggle();
+    action();
   }
 });
+
+// Lock-screen / media-key controls while playing in the browser.
+function updateMediaSession(t) {
+  if (!("mediaSession" in navigator)) return;
+  if (Player.target || !t) {
+    navigator.mediaSession.metadata = null;
+    return;
+  }
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: t.title, artist: t.artist, album: t.album,
+    artwork: [{ src: `/api/art/album/${t.album_id}`, sizes: "512x512" }],
+  });
+}
+if ("mediaSession" in navigator) {
+  const ms = navigator.mediaSession;
+  ms.setActionHandler("play", () => Player.toggle());
+  ms.setActionHandler("pause", () => Player.toggle());
+  ms.setActionHandler("nexttrack", () => Player.next());
+  ms.setActionHandler("previoustrack", () => Player.prev());
+}
 
 function renderNowPlaying() {
   const bar = $("#player");
@@ -231,16 +315,19 @@ function renderNowPlaying() {
     t = st && st.track;
     playing = st && st.st === "play";
     sub = t ? `${t.artist} — ${t.album}` : (r ? `${r.name} · ${r.online ? "idle" : "offline"}` : "");
-    if (st && st.vol) $("#volume").value = st.vol;
+    if (st && st.vol && !isBusy($("#volume"))) $("#volume").value = st.vol;
   } else {
     t = Player.current;
     playing = t && !audio.paused;
     if (t) sub = `${t.artist} — ${t.album}`;
   }
   bar.classList.toggle("playing", !!playing);
-  $("#np-title").textContent = t ? t.title : "Nothing playing";
-  $("#np-sub").textContent = t ? sub : (sub || "Pick something from your library");
   const art = $("#np-art");
+  $("#np-title").textContent = t ? t.title : "Nothing playing";
+  $("#np-title").dataset.album = t ? t.album_id : "";
+  const msKey = !Player.target && t ? String(t.id) : "";
+  if (Player._msKey !== msKey) { Player._msKey = msKey; updateMediaSession(t); }
+  $("#np-sub").textContent = t ? sub : (sub || "Pick something from your library");
   const key = t ? `${t.album_id}` : "";
   if (art.dataset.key !== key) {
     art.dataset.key = key;
@@ -312,11 +399,17 @@ $("#target").addEventListener("change", (e) => {
   Player.target = e.target.value;
   localStorage.setItem("rio.target", Player.target);
   if (Player.target) audio.pause();
+  else $("#volume").value = Math.round(audio.volume * 100);
   renderNowPlaying();
   markPlaying();
   toast(Player.target ? `Playing on ${Player.receiver ? Player.receiver.name : Player.target}` : "Playing in this browser");
 });
-setInterval(pollReceivers, 2500);
+// Poll briskly while a receiver is being controlled, slowly otherwise.
+function schedulePoll() {
+  const delay = document.hidden ? 10000 : (Player.target || currentRoute === "receivers") ? 1000 : 4000;
+  setTimeout(() => pollReceivers().finally(schedulePoll), delay);
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) pollReceivers(); });
 
 // ---------------------------------------------------------------- library status
 
@@ -404,7 +497,7 @@ async function viewArtists() {
     [...groups].map(([letter, list]) => h("section", { class: "artist-group", id: `letter-${letter}` },
       h("h3", {}, letter),
       h("div", { class: "artist-grid" }, list.map((a) => h("a", { class: "artist-card", href: `#/artists/${a.id}` },
-        h("div", { class: "avatar" }, placeholder(a.name)),
+        artistArt(a),
         h("div", { style: "min-width:0" },
           h("div", { class: "name" }, a.name),
           h("div", { class: "meta" }, `${plural(a.album_count, "album")} · ${plural(a.track_count, "song")}`))))),
@@ -418,10 +511,10 @@ async function viewArtist(id) {
   const all = albums.flatMap((a) => a.tracks);
   return [
     h("div", { class: "head-row" },
-      h("div", {},
+      h("div", { class: "artist-hero" }, artistArt(artist, "avatar big"), h("div", {},
         h("div", { class: "subtle" }, h("a", { href: "#/artists" }, "Artists")),
         h("h1", {}, artist.name),
-        h("div", { class: "subtle" }, `${plural(albums.length, "album")} · ${plural(all.length, "song")} · ${fmtLong(all.reduce((s, t) => s + t.duration_ms, 0))}`)),
+        h("div", { class: "subtle" }, `${plural(albums.length, "album")} · ${plural(all.length, "song")} · ${fmtLong(all.reduce((s, t) => s + t.duration_ms, 0))}`))),
       h("div", { class: "btn-row" },
         h("button", { class: "btn primary", onclick: () => Player.playTracks(all, 0) }, icon("play"), "Play all"),
         h("button", { class: "btn", onclick: () => Player.playTracks(all, 0, { shuffle: true }) }, icon("shuffle"), "Shuffle"))),
@@ -549,58 +642,110 @@ async function viewSearch(q) {
     h("h1", {}, `Results for “${q}”`),
     none ? h("p", { class: "subtle" }, "Nothing found.") : null,
     res.artists.length ? [h("h2", {}, "Artists"), h("div", { class: "artist-grid" }, res.artists.map((a) =>
-      h("a", { class: "artist-card", href: `#/artists/${a.id}` }, h("div", { class: "avatar" }, placeholder(a.name)),
+      h("a", { class: "artist-card", href: `#/artists/${a.id}` }, artistArt(a),
         h("div", {}, h("div", { class: "name" }, a.name), h("div", { class: "meta" }, plural(a.track_count, "song"))))))] : null,
     res.albums.length ? [h("h2", {}, "Albums"), h("div", { class: "album-grid" }, res.albums.map(albumTile))] : null,
     res.tracks.length ? [h("h2", {}, "Songs"), trackTable(res.tracks, { album: true, artist: true, numbers: false })] : null,
   ];
 }
 
-function receiverCard(r) {
-  const st = r.state || {};
-  const t = st.track;
-  const controls = r.controllable ? h("div", { class: "ctrl" },
+const STATE_NAMES = { play: "Playing", pause: "Paused", buffer: "Buffering", stop: "Stopped", standby: "Standby" };
+const FW_NAMES = { ng: "RioServer NG firmware", stock: "Original Rio firmware", unknown: "Booting" };
+
+// A receiver card is built once and then updated in place, so polling never
+// swallows a click or yanks a slider out from under the pointer.
+function receiverCard(ip) {
+  const r = () => Player.receivers.find((x) => x.ip === ip) || {};
+  const cmd = (c, value) => post(`/api/receivers/${ip}/command`, value === undefined ? { cmd: c } : { cmd: c, value })
+    .then(() => setTimeout(pollReceivers, 350)).catch((e) => toast(e.message));
+  const sendVolume = volumeSender(() => ip);
+  const dot = h("span", { class: "dot" });
+  const name = h("span", { class: "rx-name" });
+  const rename = h("button", {
+    class: "icon-btn rename", "aria-label": "Rename", title: "Rename",
+    html: '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4"/></svg>',
+    onclick: () => {
+      const n = prompt("Name this receiver (for example Kitchen). Leave empty for the default name.", r().label || "");
+      if (n === null) return;
+      post(`/api/receivers/${ip}/name`, { name: n }).then(pollReceivers).catch((e) => toast(e.message));
+    },
+  });
+  const meta = h("div", { class: "meta" });
+  const now = h("div", { class: "now" });
+  const playBtn = h("button", { class: "icon-btn", "aria-label": "Play/pause", onclick: () => cmd("toggle") });
+  const vol = trackBusy(h("input", { type: "range", min: 0, max: 100, value: 50, "aria-label": "Volume",
+    oninput: (e) => { sendVolume(Number(e.target.value)); volLabel.textContent = e.target.value; } }));
+  const volLabel = h("span", { class: "vol-label" });
+  const ctrl = h("div", { class: "ctrl" },
     h("button", { class: "icon-btn", "aria-label": "Previous", html: ICON.prev, onclick: () => cmd("prev") }),
-    h("button", { class: "icon-btn", "aria-label": "Play/pause", html: st.st === "play" ? ICON.pause : ICON.play, onclick: () => cmd("toggle") }),
+    playBtn,
     h("button", { class: "icon-btn", "aria-label": "Next", html: ICON.next, onclick: () => cmd("next") }),
     h("button", { class: "icon-btn", "aria-label": "Stop", html: ICON.stop, onclick: () => cmd("stop") }),
     h("span", { html: ICON.speaker, style: "display:inline-flex;color:var(--muted);margin-left:8px" }),
-    h("input", { type: "range", min: 0, max: 100, value: st.vol || 50, "aria-label": "Volume", onchange: (e) => cmd("vol", Number(e.target.value)) }),
-  ) : null;
-  function cmd(c, value) {
-    post(`/api/receivers/${r.ip}/command`, value === undefined ? { cmd: c } : { cmd: c, value })
-      .then(() => setTimeout(pollReceivers, 600)).catch((e) => toast(e.message));
-  }
-  const fw = { ng: "RioServer NG firmware", stock: "Original Rio firmware", unknown: "Booting" }[r.firmware] || r.firmware;
-  return h("div", { class: "card" },
-    h("h3", {}, h("span", { class: `dot ${r.online ? "on" : ""}` }), r.name),
-    h("div", { class: "meta" }, `${r.ip}${r.mac ? " · " + r.mac : ""} · ${fw}`),
-    h("div", { class: "now" }, t
+    vol, volLabel);
+  const sleepInfo = h("span", { class: "meta" });
+  const sleep = h("select", { class: "sleep", "aria-label": "Sleep timer",
+    onchange: (e) => post(`/api/receivers/${ip}/sleep`, { minutes: Number(e.target.value) })
+      .then(() => { toast(Number(e.target.value) ? `Sleeping in ${e.target.value} min` : "Sleep timer off"); pollReceivers(); })
+      .catch((err) => toast(err.message)) },
+    [["0", "Sleep timer"], ["15", "15 min"], ["30", "30 min"], ["45", "45 min"], ["60", "1 hour"], ["90", "90 min"]]
+      .map(([v, label]) => h("option", { value: v }, label)));
+  const sleepRow = h("div", { class: "sleep-row" }, h("span", { html: ICON.moon, style: "display:inline-flex;color:var(--muted)" }), sleep, sleepInfo);
+  const send = h("button", {
+    class: "btn", style: "margin-top:12px",
+    onclick: () => { Player.target = ip; localStorage.setItem("rio.target", ip); $("#target").value = ip; renderNowPlaying(); toast(`Playing on ${r().name}`); },
+  }, "Send music here");
+  const el = h("div", { class: "card" }, h("h3", {}, dot, name, rename), meta, now, ctrl, sleepRow, send);
+  let playIcon = null;
+
+  function update(rx) {
+    const st = rx.state || {};
+    const t = st.track;
+    dot.className = `dot ${rx.online ? "on" : ""}`;
+    name.textContent = rx.name;
+    meta.textContent = `${rx.ip}${rx.mac ? " · " + rx.mac : ""} · ${FW_NAMES[rx.firmware] || rx.firmware}`;
+    now.replaceChildren(...(t
       ? [h("div", { class: "t" }, t.title), h("div", { class: "meta" }, `${t.artist} — ${t.album}`),
-        h("div", { class: "meta" }, `${{ play: "Playing", pause: "Paused", buffer: "Buffering", stop: "Stopped", standby: "Standby" }[st.st] || st.st} · ${fmtTime(st.pos)} / ${fmtTime(t.duration_ms)}${st.qn ? ` · track ${Number(st.qi) + 1} of ${st.qn}` : ""}`)]
-      : h("div", { class: "meta" }, r.firmware === "stock"
+        h("div", { class: "meta" }, `${STATE_NAMES[st.st] || st.st} · ${fmtTime(st.pos)} / ${fmtTime(t.duration_ms)}${st.qn ? ` · track ${Number(st.qi) + 1} of ${st.qn}` : ""}`)]
+      : [h("div", { class: "meta" }, rx.firmware === "stock"
         ? "Browsing with the original firmware. Switch to RioServer NG firmware for remote control."
-        : r.online ? "Idle" : `Last seen ${new Date(r.last_seen * 1000).toLocaleString()}`)),
-    controls,
-    r.firmware === "ng" && r.online ? h("button", {
-      class: "btn", style: "margin-top:12px",
-      onclick: () => { Player.target = r.ip; localStorage.setItem("rio.target", r.ip); $("#target").value = r.ip; renderNowPlaying(); toast(`Playing on ${r.name}`); },
-    }, "Send music here") : null,
-  );
+        : rx.online ? "Idle" : `Last seen ${new Date(rx.last_seen * 1000).toLocaleString()}`)]));
+    ctrl.hidden = sleepRow.hidden = !rx.controllable;
+    const left = rx.sleep_at ? Math.max(1, Math.round((rx.sleep_at * 1000 - Date.now()) / 60000)) : 0;
+    sleepInfo.textContent = left ? `Stops in ${plural(left, "minute")}` : "";
+    if (!left && document.activeElement !== sleep) sleep.value = "0";
+    send.hidden = !(rx.firmware === "ng" && rx.online);
+    const want = st.st === "play" ? "pause" : "play";
+    if (playIcon !== want) { playBtn.innerHTML = ICON[want]; playIcon = want; }
+    if (st.vol && !isBusy(vol)) { vol.value = st.vol; volLabel.textContent = st.vol; }
+  }
+  return { el, update };
 }
 
 let receiverHolder = null;
+const receiverCards = new Map();
 function renderReceiverCards() {
   if (!receiverHolder) return;
-  receiverHolder.replaceChildren(...(Player.receivers.length
-    ? Player.receivers.map(receiverCard)
-    : [h("div", { class: "empty", style: "grid-column:1/-1" },
+  if (!Player.receivers.length) {
+    receiverCards.clear();
+    receiverHolder.replaceChildren(h("div", { class: "empty", style: "grid-column:1/-1" },
       h("h2", {}, "No receivers yet"),
-      h("p", {}, "Power on a Rio Receiver or Dell Digital Audio Receiver on the same network. It finds this server automatically, boots from it and shows up here."))]));
+      h("p", {}, "Power on a Rio Receiver or Dell Digital Audio Receiver on the same network. It finds this server automatically, boots from it and shows up here.")));
+    return;
+  }
+  const els = Player.receivers.map((rx) => {
+    if (!receiverCards.has(rx.ip)) receiverCards.set(rx.ip, receiverCard(rx.ip));
+    const card = receiverCards.get(rx.ip);
+    card.update(rx);
+    return card.el;
+  });
+  const kids = [...receiverHolder.children];
+  if (kids.length !== els.length || els.some((el, i) => kids[i] !== el)) receiverHolder.replaceChildren(...els);
 }
 
 async function viewReceivers() {
   receiverHolder = h("div", { class: "cards" });
+  receiverCards.clear();
   await pollReceivers();
   renderReceiverCards();
   return [
@@ -705,4 +850,5 @@ $("#menu-btn").addEventListener("click", () => $("#sidebar").classList.toggle("o
 route();
 pollStatus();
 pollReceivers();
+schedulePoll();
 renderNowPlaying();

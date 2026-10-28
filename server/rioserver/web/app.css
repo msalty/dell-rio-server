@@ -37,6 +37,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { height: 100%; }
 body {
   margin: 0;
@@ -103,7 +104,20 @@ svg .fill { fill: currentColor; stroke: none; }
 .artist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
 .artist-card { display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: var(--radius); background: var(--panel); border: 1px solid transparent; transition: border-color .15s, transform .15s; }
 .artist-card:hover { border-color: var(--line); transform: translateY(-1px); }
-.artist-card .avatar { width: 48px; height: 48px; border-radius: 50%; overflow: hidden; flex: none; }
+.avatar { position: relative; width: 56px; height: 56px; border-radius: 50%; overflow: hidden; flex: none; background: var(--panel-2); box-shadow: 0 0 0 1px var(--line), 0 4px 12px rgba(0, 0, 0, .25); }
+.avatar img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .25s; }
+.artist-card:hover .avatar img { transform: scale(1.06); }
+.avatar.big { width: 112px; height: 112px; }
+.artist-hero { display: flex; align-items: center; gap: 20px; }
+/* a record: grooves, a coloured label with the initials, and a sheen */
+.vinyl { position: absolute; inset: 0; border-radius: 50%; display: grid; place-items: center;
+  background:
+    radial-gradient(circle, #0b0d0e 0 5%, transparent 5.5%),
+    radial-gradient(circle, hsl(var(--hue) 62% 52%) 0 37%, hsl(var(--hue) 55% 34%) 38%, transparent 39%),
+    conic-gradient(from 30deg, transparent 0 12%, rgba(255, 255, 255, .09) 18%, transparent 26% 62%, rgba(255, 255, 255, .07) 68%, transparent 76%),
+    repeating-radial-gradient(circle, #16191b 0 1.2px, #22272a 1.6px 2.6px); }
+.vinyl span { font-weight: 800; font-size: 12px; letter-spacing: .5px; color: rgba(255, 255, 255, .95); text-shadow: 0 1px 2px rgba(0, 0, 0, .35); }
+.avatar.big .vinyl span { font-size: 22px; }
 .artist-card .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .artist-card .meta { font-size: 12px; color: var(--muted); }
 
@@ -166,6 +180,12 @@ svg .fill { fill: currentColor; stroke: none; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
 .card h3 { margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
+.card h3 .rename { margin-left: auto; padding: 6px; opacity: .6; }
+.card h3 .rename svg { width: 16px; height: 16px; }
+.card h3 .rename:hover { opacity: 1; }
+.card .sleep-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding-left: 8px; }
+.card .sleep { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; font: inherit; font-size: 13px; }
+.card .vol-label { width: 26px; text-align: right; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); display: inline-block; }
 .dot.on { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
 .card .meta { color: var(--muted); font-size: 13px; }
@@ -191,6 +211,7 @@ code { background: var(--panel-2); padding: 1px 6px; border-radius: 6px; font-si
 .np-art { width: 54px; height: 54px; border-radius: 8px; overflow: hidden; flex: none; background: var(--panel-2); }
 .np-art .cover { border-radius: 0; }
 .np-text { min-width: 0; }
+.np-title, .np-art { cursor: pointer; }
 .np-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .np-sub { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .transport { display: flex; flex-direction: column; align-items: center; gap: 4px; }
@@ -225,6 +246,7 @@ input[type=range] { accent-color: var(--accent); height: 4px; cursor: pointer; }
   .album-hero h1 { font-size: 30px; }
   .player { grid-template-columns: 1fr auto; grid-template-rows: auto auto; padding: 10px 16px; gap: 6px 14px; }
   .transport { grid-column: 1 / -1; grid-row: 2; }
-  .volume { display: none; }
+  .volume { grid-column: 2; grid-row: 1; }
+  .volume input { width: 96px; }
   .tracks .col-album { display: none; }
 }

@@ -93,7 +93,7 @@ async def start_boot_services(ctx: Context) -> list:
 async def run(cfg: Config) -> None:
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     library = Library(cfg.music_dir, cfg.data_dir / "library.db")
-    ctx = Context(cfg, library, ReceiverRegistry())
+    ctx = Context(cfg, library, ReceiverRegistry(cfg.data_dir / "receivers.json"))
     ctx.watcher = LibraryWatcher(library, cfg.rescan_interval, cfg.watch, cfg.watch_polling)
     ctx.watcher.start()
 

@@ -4,10 +4,11 @@
 #include <stdint.h>
 
 void ui_boot_screen(const char *line1, const char *line2);
-void ui_init(void);
+void ui_boot_intro(const char *line1);
+void ui_init(int wake_port);
 void ui_key(int key);
 void ui_tick(uint32_t now);
-void ui_poll_server(void);
+int ui_poll_server(void); /* returns the number of commands run */
 void ui_dirty(void);
 
 #endif

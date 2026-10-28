@@ -80,3 +80,30 @@ def test_browse_artist_album_and_play(server, tmp_path):
         assert '"Maxwell\'s Silver Hammer"' in rx.console()
     finally:
         rx.stop()
+
+
+def test_web_commands_take_effect_immediately(server, tmp_path):
+    """The server wakes the receiver over UDP instead of waiting for its
+    next poll (every 3 s), so remote control feels instant."""
+    import json
+    import urllib.request
+
+    from simulate import Receiver
+
+    rx = Receiver(str(FIRMWARE), server, workdir=str(tmp_path / "rx"))
+    try:
+        time.sleep(3)
+        ip = json.load(urllib.request.urlopen(f"http://{server}/api/receivers"))[0]["ip"]
+        for i in range(3):
+            before = rx.framebuffer()
+            t0 = time.time()
+            req = urllib.request.Request(f"http://{server}/api/receivers/{ip}/command",
+                                         data=json.dumps({"cmd": "msg", "value": f"Hello {i}"}).encode(),
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req).read()
+            while rx.framebuffer() == before and time.time() - t0 < 5:
+                time.sleep(0.01)
+            assert time.time() - t0 < 1.0, rx.console()
+            time.sleep(0.8)
+    finally:
+        rx.stop()

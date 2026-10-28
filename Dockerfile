@@ -10,11 +10,12 @@
 # natively on the build machine, even when building an arm64 server image.
 FROM --platform=$BUILDPLATFORM ubuntu:24.04 AS firmware
 RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc-arm-none-eabi make python3 ca-certificates \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc-arm-none-eabi make python3 ca-certificates zopfli \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src/firmware
 COPY firmware/ ./
-# Fetches libmad and the RioPlay kernel image from SourceForge (checksummed).
+# Fetches libmad and the RioPlay kernel image from SourceForge (checksummed),
+# and swaps the kernel's DELL/Rio splash screens for ours (needs zopfli).
 RUN make clean && make \
  && mkdir -p /out \
  && cp build/receiver-ng.arf build/deps/receiver-rioplay.arf /out/

@@ -16,7 +16,9 @@ RioServer NG runs in Docker. It provides:
   Recently Added, Shuffle Songs, a Now Playing screen and Settings.
 - **A web interface** for browsing by artist › album › track list, with album
   art and search. You can play music in the browser or send it to any
-  receiver and control playback from there.
+  receiver and control playback from there. Commands reach the receiver
+  instantly. Receivers can be given names ("Kitchen") and have a sleep timer
+  that fades out and pauses.
 - **Automatic library updates.** Music added to, changed in or removed from
   the mounted folder shows up within seconds. A periodic rescan catches
   anything the file watcher misses.
@@ -96,6 +98,9 @@ The app uses the multi-arch image `ghcr.io/msalty/dell-rio-server`, which
   | 12078/tcp | Rio music protocol (and the web interface) |
   | 8080/tcp | web interface |
 
+  The server also sends small UDP datagrams to port 21076 on NG receivers,
+  so they act on web-interface commands at once.
+
   If the host already runs `rpcbind` (common when it mounts or exports NFS
   shares), set `RIO_PORTMAP_PORT` to an unused port. If the receiver can't
   reach a portmapper, its kernel falls back to the standard mountd and NFS
@@ -129,7 +134,9 @@ Tags are read from ID3v1/ID3v2. Files without tags are named from an
 artist*, so compilations tagged with an album artist such as "Various
 Artists" stay together. `.m3u`/`.m3u8` files in the music folder become
 playlists. Album art comes from embedded pictures or from a
-`cover.jpg`/`folder.jpg` file in the album folder.
+`cover.jpg`/`folder.jpg` file in the album folder. Artist pictures come from an
+`artist.jpg` in the artist's folder (the convention Plex and Kodi use), or
+otherwise from the artist's newest album cover.
 
 ## Firmware
 
@@ -163,6 +170,12 @@ The image consists of the RioServer NG player as `/sbin/init`, plus the
 Linux 2.2.14 kernel and HomePNA driver from the open-source RioPlay project.
 Those two files are downloaded from SourceForge with pinned checksums during
 the build.
+
+The kernel draws a "DELL" or "Rio" logo while it boots. The build replaces
+those screens with the RioServer NG logo (`firmware/tools/kernel_splash.py`;
+needs `zopfli`). The receiver's boot loader in flash has its own copy of the
+first screen, so the old logo still appears for a moment at power-on. From the
+moment the kernel is downloaded, the receiver shows the new one.
 
 ### RioPlay 0.29
 
@@ -199,7 +212,8 @@ stock menus can play an album in order.
 pip install -r server/requirements.txt pytest pytest-asyncio
 cd server && python -m pytest
 
-# firmware (needs arm-none-eabi-gcc; tests also need qemu-arm and ffmpeg)
+# firmware (needs arm-none-eabi-gcc and zopfli; tests also need qemu-arm,
+# ffmpeg and `pip install unicorn`)
 make -C firmware
 ```
 

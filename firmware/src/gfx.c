@@ -149,6 +149,27 @@ void gfx_text_right(const struct font *f, int xr, int y, const char *s, int shad
     gfx_text(f, xr - gfx_text_width(f, s), y, s, shade, ink);
 }
 
+void gfx_bitmap(const uint8_t *data, int w, int h, int x, int y, int glint)
+{
+    int stride = (w + 3) / 4;
+    for (int row = 0; row < h; row++) {
+        const uint8_t *p = data + row * stride;
+        for (int col = 0; col < w; col++) {
+            int v = (p[col >> 2] >> ((col & 3) * 2)) & 3;
+            if (!v)
+                continue;
+            if (glint != GLINT_NONE) {
+                int d = col + row / 4 - glint;
+                if (d > 0)
+                    v = 1;
+                else if (d > -10)
+                    v = 3;
+            }
+            gfx_pixel(x + col, y + row, v);
+        }
+    }
+}
+
 /* 7x7 icons, one string per row, '#' = lit */
 static const char *const icons[][7] = {
     [ICON_PLAY] = {"#      ", "###    ", "#####  ", "#######", "#####  ", "###    ", "#      "},
