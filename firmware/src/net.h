@@ -29,6 +29,29 @@ int http_read_headers(int fd, long *content_length, char *extra, int extra_cap, 
  * length or a negative value. */
 int http_get(const char *path, char *buf, int cap, int timeout_ms);
 
+/* A GET that runs alongside playback instead of blocking the main loop.
+ * Start it, then call http_async_step() whenever http_async_fd() is ready
+ * (or at least every few hundred ms, for the timeout). */
+struct http_async {
+    int fd;          /* -1 when idle */
+    int connected;
+    int req_len, sent;
+    int got, cap;
+    char *buf;
+    uint32_t deadline;
+    char req[320];
+};
+int http_async_start(struct http_async *h, const char *path, char *buf, int cap, int timeout_ms);
+/* The socket to wait on; *want_write is set while connecting/sending. */
+int http_async_fd(const struct http_async *h, int *want_write);
+/* Returns HTTP_PENDING while running, then the body length (body moved to
+ * the start of buf, NUL terminated) or a negative value on error/timeout.
+ * The request is finished (and the socket closed) once it returns anything
+ * else than HTTP_PENDING. */
+#define HTTP_PENDING (-1000)
+int http_async_step(struct http_async *h);
+void http_async_cancel(struct http_async *h);
+
 /* UDP socket on which the server asks for an immediate poll, so commands
  * from the web interface take effect at once instead of at the next regular
  * poll. Stores the bound port in *port. */

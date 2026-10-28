@@ -139,9 +139,13 @@ first line is `RNG 1`, followed by tab-separated records.
   per line.
 - `GET /ng/track/<fid>` returns key/value lines: title, artist, album, track,
   tracks, dur, kbps, size and so on.
-- `GET /ng/poll?mac=&st=&id=&pos=&vol=&qi=&qn=&wake=` reports the receiver's
-  state every 3 seconds. The reply carries `lib <version>` and any `cmd …`
-  lines queued by the web interface.
+- `GET /ng/poll?mac=&st=&id=&pos=&vol=&qi=&qn=&wake=&stall=` reports the
+  receiver's state every 3 seconds. The reply carries `lib <version>` and any
+  `cmd …` lines queued by the web interface. The firmware runs the poll
+  alongside playback, so a slow reply never holds up the audio. `stall` is
+  the longest time (ms) the player loop was held up during playback since the
+  previous poll. The server logs a warning above 250 ms, which probably means
+  an audible skip.
 
 The firmware listens on UDP port 21076 (or another free port, reported as
 `wake`). When the web interface queues a command, the server sends a datagram

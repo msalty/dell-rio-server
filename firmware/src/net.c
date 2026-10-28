@@ -289,7 +289,7 @@ int http_request(const char *path, long range_from, int timeout_ms)
             return -2;
         }
         rc = (int)sys_socketcall(SYS_CONNECT, c); /* reports the final result */
-        if (rc == -106 /* EISCONN */)
+        if (rc == -EISCONN)
             rc = 0;
     }
     if (rc < 0) {
@@ -385,4 +385,99 @@ int http_get(const char *path, char *buf, int cap, int timeout_ms)
     sys_close(fd);
     buf[got] = 0;
     return got;
+}
+
+int http_async_start(struct http_async *h, const char *path, char *buf, int cap, int timeout_ms)
+{
+    h->fd = -1;
+    if (!g_server.ip)
+        return -1;
+    h->req_len = snprintf(h->req, sizeof(h->req), "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: RioServerNG/1\r\n\r\n",
+                          path, g_server.host);
+    if (h->req_len >= (int)sizeof(h->req))
+        return -4;
+    int fd = sock(SOCK_STREAM);
+    if (fd < 0)
+        return fd;
+    net_set_nonblocking(fd, 1);
+    struct sockaddr_in to = {AF_INET, htons(g_server.port), g_server.ip, {0}};
+    long c[3] = {fd, (long)&to, sizeof(to)};
+    int rc = (int)sys_socketcall(SYS_CONNECT, c);
+    if (rc < 0 && rc != -EINPROGRESS && rc != -EAGAIN) {
+        sys_close(fd);
+        return -3;
+    }
+    h->fd = fd;
+    h->connected = rc == 0;
+    h->sent = h->got = 0;
+    h->buf = buf;
+    h->cap = cap;
+    h->deadline = time_ms() + (uint32_t)timeout_ms;
+    return 0;
+}
+
+int http_async_fd(const struct http_async *h, int *want_write)
+{
+    *want_write = h->fd >= 0 && h->sent < h->req_len;
+    return h->fd;
+}
+
+void http_async_cancel(struct http_async *h)
+{
+    net_close(h->fd);
+    h->fd = -1;
+}
+
+static int async_fail(struct http_async *h, int err)
+{
+    http_async_cancel(h);
+    return err;
+}
+
+int http_async_step(struct http_async *h)
+{
+    if (h->fd < 0)
+        return -1;
+    if ((int32_t)(time_ms() - h->deadline) >= 0)
+        return async_fail(h, -2);
+    if (!h->connected) {
+        struct sockaddr_in to = {AF_INET, htons(g_server.port), g_server.ip, {0}};
+        long c[3] = {h->fd, (long)&to, sizeof(to)};
+        int rc = (int)sys_socketcall(SYS_CONNECT, c); /* reports the result so far */
+        if (rc == -EINPROGRESS || rc == -EALREADY || rc == -EAGAIN)
+            return HTTP_PENDING;
+        if (rc < 0 && rc != -EISCONN)
+            return async_fail(h, -3);
+        h->connected = 1;
+    }
+    while (h->sent < h->req_len) {
+        long a[4] = {h->fd, (long)(h->req + h->sent), h->req_len - h->sent, MSG_NOSIGNAL};
+        int n = (int)sys_socketcall(SYS_SEND, a);
+        if (n == -EAGAIN || n == -EINTR)
+            return HTTP_PENDING;
+        if (n <= 0)
+            return async_fail(h, -4);
+        h->sent += n;
+    }
+    for (;;) {
+        if (h->got >= h->cap - 1)
+            break; /* full: keep what fits */
+        int n = net_recv(h->fd, h->buf + h->got, h->cap - 1 - h->got);
+        if (n == -EAGAIN || n == -EINTR)
+            return HTTP_PENDING;
+        if (n < 0)
+            return async_fail(h, -5);
+        if (n == 0)
+            break; /* HTTP/1.0: the server closes after the body */
+        h->got += n;
+    }
+    http_async_cancel(h);
+    h->buf[h->got] = 0;
+    char *end = strstr(h->buf, "\r\n\r\n");
+    char *sp = strchr(h->buf, ' ');
+    if (!end || !sp || atoi(sp + 1) != 200)
+        return -6;
+    int body = h->got - (int)(end + 4 - h->buf);
+    memmove(h->buf, end + 4, (size_t)body + 1);
+    return body;
 }
