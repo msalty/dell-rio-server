@@ -676,13 +676,13 @@ function receiverCard(ip) {
   const vol = trackBusy(h("input", { type: "range", min: 0, max: 100, value: 50, "aria-label": "Volume",
     oninput: (e) => { sendVolume(Number(e.target.value)); volLabel.textContent = e.target.value; } }));
   const volLabel = h("span", { class: "vol-label" });
-  const ctrl = h("div", { class: "ctrl" },
+  const transport = h("div", { class: "ctrl" },
     h("button", { class: "icon-btn", "aria-label": "Previous", html: ICON.prev, onclick: () => cmd("prev") }),
     playBtn,
     h("button", { class: "icon-btn", "aria-label": "Next", html: ICON.next, onclick: () => cmd("next") }),
-    h("button", { class: "icon-btn", "aria-label": "Stop", html: ICON.stop, onclick: () => cmd("stop") }),
-    h("span", { html: ICON.speaker, style: "display:inline-flex;color:var(--muted);margin-left:8px" }),
-    vol, volLabel);
+    h("button", { class: "icon-btn", "aria-label": "Stop", html: ICON.stop, onclick: () => cmd("stop") }));
+  const volRow = h("div", { class: "vol-row" },
+    h("span", { html: ICON.speaker, style: "display:inline-flex;color:var(--muted)" }), vol, volLabel);
   const sleepInfo = h("span", { class: "meta" });
   const sleep = h("select", { class: "sleep", "aria-label": "Sleep timer",
     onchange: (e) => post(`/api/receivers/${ip}/sleep`, { minutes: Number(e.target.value) })
@@ -691,11 +691,12 @@ function receiverCard(ip) {
     [["0", "Sleep timer"], ["15", "15 min"], ["30", "30 min"], ["45", "45 min"], ["60", "1 hour"], ["90", "90 min"]]
       .map(([v, label]) => h("option", { value: v }, label)));
   const sleepRow = h("div", { class: "sleep-row" }, h("span", { html: ICON.moon, style: "display:inline-flex;color:var(--muted)" }), sleep, sleepInfo);
+  const ctrl = h("div", { class: "controls" }, transport, volRow, sleepRow);
   const send = h("button", {
-    class: "btn", style: "margin-top:12px",
+    class: "btn send",
     onclick: () => { Player.target = ip; localStorage.setItem("rio.target", ip); $("#target").value = ip; renderNowPlaying(); toast(`Playing on ${r().name}`); },
   }, "Send music here");
-  const el = h("div", { class: "card" }, h("h3", {}, dot, name, rename), meta, now, ctrl, sleepRow, send);
+  const el = h("div", { class: "card" }, h("h3", {}, dot, name, rename), meta, now, ctrl, send);
   let playIcon = null;
 
   function update(rx) {
@@ -710,7 +711,7 @@ function receiverCard(ip) {
       : [h("div", { class: "meta" }, rx.firmware === "stock"
         ? "Browsing with the original firmware. Switch to RioServer NG firmware for remote control."
         : rx.online ? "Idle" : `Last seen ${new Date(rx.last_seen * 1000).toLocaleString()}`)]));
-    ctrl.hidden = sleepRow.hidden = !rx.controllable;
+    ctrl.hidden = !rx.controllable;
     const left = rx.sleep_at ? Math.max(1, Math.round((rx.sleep_at * 1000 - Date.now()) / 60000)) : 0;
     sleepInfo.textContent = left ? `Stops in ${plural(left, "minute")}` : "";
     if (!left && document.activeElement !== sleep) sleep.value = "0";
