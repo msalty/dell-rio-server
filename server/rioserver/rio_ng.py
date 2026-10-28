@@ -16,9 +16,11 @@ tab-separated records.
       total  <n>, then one hex fid per line
   GET /ng/track/<fid>
       key/value lines: title, artist, album, track, tracks, dur, kbps, ...
-  GET /ng/poll?mac=..&st=..&id=..&pos=..&vol=..&qi=..&qn=..
+  GET /ng/poll?mac=..&st=..&id=..&pos=..&vol=..&qi=..&qn=..&wake=<port>
       reports playback state; the reply carries queued commands from the web
-      UI ("cmd <verb> [args...]") and the library version ("lib <n>").
+      UI ("cmd <verb> [args...]") and the library version ("lib <n>"). When a
+      command is queued the server sends a UDP datagram to <port> on the
+      receiver, which then polls at once instead of waiting a few seconds.
 
 Nodes are paths such as "artists", "ar:12", "ar:12/al:40", "ge:3/ar:12/all",
 "pl:2" or "q:7" (an ad-hoc queue created by the web UI). Each step narrows the
@@ -301,6 +303,10 @@ class NGProtocol:
             raise web.HTTPBadRequest()
         q = req.query
         r = self.ctx.receivers.touch(req.remote, firmware="ng", stage="running", mac=q.get("mac"))
+        try:
+            r.wake_port = max(0, min(65535, int(q.get("wake", 0))))
+        except ValueError:
+            r.wake_port = 0
         state = {k: q.get(k) for k in ("st", "id", "pos", "vol", "qi", "qn", "shuf", "rep", "ver")}
         fid = ids.parse_hex(state.get("id") or "")
         kind = ids.decode_fid(fid) if fid else None
@@ -311,10 +317,14 @@ class NGProtocol:
                     "id": t["id"], "title": t["title"], "artist": t["artist"], "album": t["album"],
                     "album_id": t["album_id"], "duration_ms": t["duration_ms"],
                 }
-        r.state = state
         lines = [f"lib\t{self.lib.version}"]
         while r.commands:
-            lines.append("cmd\t" + "\t".join(str(x) for x in r.commands.popleft()))
+            cmd = r.commands.popleft()
+            if cmd[0] == "vol" and len(cmd) > 1:
+                # This report predates the command; show where it's going.
+                state["vol"] = str(cmd[1])
+            lines.append("cmd\t" + "\t".join(str(x) for x in cmd))
+        r.state = state
         return self._reply(lines)
 
 

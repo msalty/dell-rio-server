@@ -220,3 +220,99 @@ async def test_firmware_listing_select_and_download(library, tmp_path):
         assert (await c.post("/api/firmware", json={"name": "../etc/passwd"})).status == 400
         r = await c.get("/api/firmware/ng/download")
         assert r.status == 200 and (await r.read()) == make_arf()
+
+
+# ---- remote control from the web interface ------------------------------
+
+async def _ng_receiver(client, wake=0):
+    await client.get(f"/ng/poll?mac=00:90:4b:00:00:01&st=play&vol=40&wake={wake}")
+    return next(iter(client.ctx.receivers._by_ip))
+
+
+async def test_volume_drags_collapse_to_latest_value(client):
+    ip = await _ng_receiver(client)
+    for v in (45, 52, 60, 71):
+        assert (await client.post(f"/api/receivers/{ip}/command", json={"cmd": "vol", "value": v})).status == 200
+    await client.post(f"/api/receivers/{ip}/command", json={"cmd": "next"})
+    # the web interface sees the new volume straight away...
+    rx = (await (await client.get("/api/receivers")).json())[0]
+    assert rx["state"]["vol"] == "71"
+    # ...the receiver gets only the last value, in order with other commands...
+    rows = ng_lines(await (await client.get("/ng/poll?st=play&vol=40")).text())
+    assert [r[1:] for r in rows if r[0] == "cmd"] == [["vol", "71"], ["next"]]
+    # ...and the poll that carried the command doesn't bounce the slider back
+    rx = (await (await client.get("/api/receivers")).json())[0]
+    assert rx["state"]["vol"] == "71"
+
+
+async def test_commands_wake_the_receiver(client):
+    import asyncio
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.setblocking(False)
+    try:
+        ip = await _ng_receiver(client, wake=sock.getsockname()[1])
+        await client.post(f"/api/receivers/{ip}/command", json={"cmd": "toggle"})
+        data = await asyncio.wait_for(asyncio.get_running_loop().sock_recv(sock, 64), 2)
+        assert data == b"poll"
+    finally:
+        sock.close()
+
+
+async def test_receiver_names_are_remembered(library, tmp_path):
+    names = tmp_path / "receivers.json"
+    ctx = Context(Config(), library, ReceiverRegistry(names))
+    async with TestClient(TestServer(build_app(ctx))) as c:
+        c.ctx = ctx
+        ip = await _ng_receiver(c)
+        r = await c.post(f"/api/receivers/{ip}/name", json={"name": "  Kitchen   shelf "})
+        assert (await r.json())["name"] == "Kitchen shelf"
+    # a new server process, and the receiver came back with another address
+    reg = ReceiverRegistry(names)
+    assert reg.touch("10.0.0.99", mac="00:90:4B:00:00:01").name == "Kitchen shelf"
+    reg.rename(reg.get("10.0.0.99"), "")
+    assert reg.get("10.0.0.99").name == "Receiver 00:00:01"
+
+
+async def test_sleep_timer_fades_out_and_restores_volume(client, monkeypatch):
+    import asyncio
+
+    from rioserver import web_api
+
+    monkeypatch.setattr(web_api, "SLEEP_FADE", 0.1)
+    ip = await _ng_receiver(client)
+    r = await client.post(f"/api/receivers/{ip}/sleep", json={"minutes": 60})
+    assert (await r.json())["sleep_at"] is not None
+    r = await client.post(f"/api/receivers/{ip}/sleep", json={"minutes": 0})
+    assert (await r.json())["sleep_at"] is None
+    await client.post(f"/api/receivers/{ip}/sleep", json={"minutes": 0.001})
+    await asyncio.sleep(0.5)
+    rows = ng_lines(await (await client.get("/ng/poll?st=play&vol=0")).text())
+    assert [r[1:] for r in rows if r[0] == "cmd"] == [["pause"], ["vol", "40"]]
+    assert client.ctx.receivers.get(ip).sleep_at is None
+
+
+async def test_artist_art(client, library):
+    beatles = library.artist_by_name("The Beatles")
+    r = await client.get(f"/api/art/artist/{beatles['id']}")  # falls back to Abbey Road's cover
+    assert r.status == 200 and r.headers["Content-Type"] == "image/jpeg"
+    assert (await client.get(f"/api/art/artist/{library.artist_by_name('Björk')['id']}")).status == 404
+
+
+async def test_artist_photo_beats_album_covers(music_dir, tmp_path):
+    import shutil
+
+    from rioserver.library import Library
+
+    music = tmp_path / "music"
+    shutil.copytree(music_dir, music)
+    (music / "Björk" / "artist.png").write_bytes(b"\x89PNG fake")
+    lib = Library(music, tmp_path / "lib.db")
+    lib.scan()
+    ctx = Context(Config(), lib, ReceiverRegistry())
+    async with TestClient(TestServer(build_app(ctx))) as c:
+        r = await c.get(f"/api/art/artist/{lib.artist_by_name('Björk')['id']}")
+        assert r.status == 200 and r.headers["Content-Type"] == "image/png"
+        assert await r.read() == b"\x89PNG fake"

@@ -52,6 +52,7 @@ static int dirty = 1;
 static uint32_t last_key, marquee_start, vol_until, last_render;
 static int backlight_on = 1, backlight_auto = 1, standby;
 static uint32_t lib_version;
+static int wake_port;
 static char menu_error[48];
 
 /* ---- helpers ----------------------------------------------------------- */
@@ -717,21 +718,22 @@ static void run_command(char **f, int nf)
     dirty = 1;
 }
 
-void ui_poll_server(void)
+int ui_poll_server(void)
 {
     static const char *const states[] = {"stop", "buffer", "play", "pause"};
     static const char *const repeats[] = {"off", "all", "one"};
     char path[256], buf[2048];
     snprintf(path, sizeof(path),
-             "/ng/poll?mac=%s&st=%s&id=%lx&pos=%lu&vol=%d&qi=%d&qn=%d&shuf=%d&rep=%s&ver=" VERSION,
+             "/ng/poll?mac=%s&st=%s&id=%lx&pos=%lu&vol=%d&qi=%d&qn=%d&shuf=%d&rep=%s&wake=%d&ver=" VERSION,
              net_mac(), standby ? "standby" : states[P.state],
              (unsigned long)(P.have_track ? P.cur.fid : 0), (unsigned long)player_position_ms(),
-             P.volume, P.qi, P.qlen, P.shuffle, repeats[P.repeat]);
+             P.volume, P.qi, P.qlen, P.shuffle, repeats[P.repeat], wake_port);
     /* Short timeout: this blocks the main loop, and audio must keep flowing
      * even if the server is slow. A missed poll is simply retried. */
     int n = http_get(path, buf, sizeof(buf), 400);
     if (n <= 0)
-        return;
+        return 0;
+    int commands = 0;
     for (char *line = buf; line && *line;) {
         char *next = strchr(line, '\n');
         if (next)
@@ -754,15 +756,18 @@ void ui_poll_server(void)
             lib_version = v;
         } else if (nf >= 2 && !strcmp(f[0], "cmd")) {
             run_command(f, nf);
+            commands++;
         }
         line = next;
     }
+    return commands;
 }
 
 /* ---- main hooks -------------------------------------------------------- */
 
-void ui_init(void)
+void ui_init(int wake)
 {
+    wake_port = wake;
     depth = 0;
     push_level("root", "Music", 0);
     last_key = time_ms();

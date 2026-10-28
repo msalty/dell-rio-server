@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import time
 from pathlib import Path
 
 from aiohttp import web
@@ -17,7 +18,9 @@ log = logging.getLogger(__name__)
 
 COVER_NAMES = ("cover", "folder", "front", "album", "albumart", "albumartsmall")
 COVER_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
+ARTIST_NAMES = ("artist", "artist-photo", "band")
 RECEIVER_COMMANDS = {"pause", "resume", "toggle", "stop", "next", "prev", "vol", "seek", "msg"}
+SLEEP_FADE = 20  # seconds over which a sleep timer fades the volume out
 
 
 def _track_json(t: dict) -> dict:
@@ -42,17 +45,32 @@ def _track_json(t: dict) -> dict:
     }
 
 
-def find_cover_file(directory: Path) -> Path | None:
+def _images(directory: Path) -> list[Path]:
     try:
-        files = list(directory.iterdir())
+        return [f for f in directory.iterdir() if f.suffix.lower() in COVER_EXTS and f.is_file()]
     except OSError:
-        return None
-    images = [f for f in files if f.suffix.lower() in COVER_EXTS and f.is_file()]
+        return []
+
+
+def find_cover_file(directory: Path) -> Path | None:
+    images = _images(directory)
     for name in COVER_NAMES:
         for f in images:
             if f.stem.lower() == name:
                 return f
     return images[0] if len(images) == 1 else None
+
+
+def find_artist_file(directory: Path) -> Path | None:
+    for f in _images(directory):
+        if f.stem.lower() in ARTIST_NAMES:
+            return f
+    return None
+
+
+def _image_mime(path: Path) -> str:
+    return {".png": "image/png", ".gif": "image/gif", ".webp": "image/webp"}.get(
+        path.suffix.lower(), "image/jpeg")
 
 
 @functools.lru_cache(maxsize=512)
@@ -70,9 +88,7 @@ def _load_art(path: str, mtime: float) -> tuple[bytes, str] | None:
     cover = find_cover_file(p.parent)
     if cover:
         try:
-            mime = {".png": "image/png", ".gif": "image/gif", ".webp": "image/webp"}.get(
-                cover.suffix.lower(), "image/jpeg")
-            return cover.read_bytes(), mime
+            return cover.read_bytes(), _image_mime(cover)
         except OSError:
             return None
     return None
@@ -82,6 +98,9 @@ class WebAPI:
     def __init__(self, ctx):
         self.ctx = ctx
         self.lib = ctx.library
+        self._sleepers: dict[str, asyncio.Task] = {}
+        self._artist_art: dict[int, Path | int | None] = {}
+        self._artist_art_version = None
 
     def routes(self) -> list:
         return [
@@ -101,10 +120,13 @@ class WebAPI:
             web.get("/api/tracks/{id:\\d+}", self.track),
             web.get("/api/art/album/{id:\\d+}", self.album_art),
             web.get("/api/art/track/{id:\\d+}", self.track_art),
+            web.get("/api/art/artist/{id:\\d+}", self.artist_art),
             web.get("/api/stream/{id:\\d+}", self.stream),
             web.get("/api/receivers", self.receivers),
             web.post("/api/receivers/{ip}/play", self.receiver_play),
             web.post("/api/receivers/{ip}/command", self.receiver_command),
+            web.post("/api/receivers/{ip}/name", self.receiver_name),
+            web.post("/api/receivers/{ip}/sleep", self.receiver_sleep),
             web.get("/api/firmware", self.firmware),
             web.post("/api/firmware", self.firmware_select),
             web.get("/api/firmware/{name}/download", self.firmware_download),
@@ -246,6 +268,48 @@ class WebAPI:
                 continue
         raise web.HTTPNotFound()
 
+    def _find_artist_art(self, artist_id: int) -> Path | int | None:
+        """An artist.jpg next to the artist's album folders, or else the track
+        id whose cover to use (newest album with art first)."""
+        albums = self.lib.albums(artist_id=artist_id)
+        tracks = [t for t in (self.lib.track(al["first_track"]) for al in reversed(albums)) if t]
+        seen = set()
+        for t in tracks:
+            album_dir = self.lib.track_path(t).parent
+            for d in (album_dir.parent, album_dir):
+                if d not in seen and d != self.lib.music_dir:
+                    seen.add(d)
+                    found = find_artist_file(d)
+                    if found:
+                        return found
+        for t in tracks[:6]:
+            path = self.lib.track_path(t)
+            try:
+                if _load_art(str(path), path.stat().st_mtime):
+                    return t["id"]
+            except OSError:
+                continue
+        return None
+
+    async def artist_art(self, req: web.Request) -> web.Response:
+        aid = int(req.match_info["id"])
+        if self._artist_art_version != self.lib.version:
+            self._artist_art.clear()
+            self._artist_art_version = self.lib.version
+        if aid not in self._artist_art:
+            self._artist_art[aid] = await self._run(self._find_artist_art, aid)
+        found = self._artist_art[aid]
+        if found is None:
+            raise web.HTTPNotFound()
+        if isinstance(found, int):
+            return await self._art_response(await self._run(self.lib.track, found))
+        try:
+            data = await self._run(found.read_bytes)
+        except OSError:
+            raise web.HTTPNotFound()
+        return web.Response(body=data, content_type=_image_mime(found),
+                            headers={"Cache-Control": "public, max-age=3600"})
+
     async def track_art(self, req: web.Request) -> web.Response:
         return await self._art_response(await self._run(self.lib.track, int(req.match_info["id"])))
 
@@ -287,7 +351,7 @@ class WebAPI:
             node = f"pl:{int(body['playlist_id'])}"
         else:
             raise web.HTTPBadRequest(text="nothing to play")
-        r.commands.append(("play", node, index, shuffle))
+        self.ctx.receivers.command(r, "play", node, index, shuffle)
         return web.json_response({"ok": True, "node": node})
 
     async def receiver_command(self, req: web.Request) -> web.Response:
@@ -299,8 +363,56 @@ class WebAPI:
         args = [cmd]
         if "value" in body:
             args.append(str(body["value"]).replace("\t", " ")[:200])
-        r.commands.append(tuple(args))
+        self.ctx.receivers.command(r, *args)
         return web.json_response({"ok": True})
+
+    async def receiver_name(self, req: web.Request) -> web.Response:
+        r = self.ctx.receivers.get(req.match_info["ip"])
+        if r is None:
+            raise web.HTTPNotFound(text="unknown receiver")
+        body = await req.json()
+        self.ctx.receivers.rename(r, str(body.get("name", "")))
+        return web.json_response(r.to_json())
+
+    async def receiver_sleep(self, req: web.Request) -> web.Response:
+        """Sleep timer: fade out, pause, and put the volume back for next time."""
+        r = self._receiver(req)
+        body = await req.json()
+        try:
+            minutes = float(body.get("minutes", 0))
+        except (TypeError, ValueError):
+            raise web.HTTPBadRequest(text="minutes must be a number")
+        old = self._sleepers.pop(r.ip, None)
+        if old:
+            old.cancel()
+        r.sleep_at = None
+        if minutes > 0:
+            delay = min(minutes, 24 * 60) * 60
+            r.sleep_at = time.time() + delay
+            self._sleepers[r.ip] = asyncio.create_task(self._sleep(r, delay))
+        return web.json_response(r.to_json())
+
+    async def _sleep(self, r, delay: float) -> None:
+        reg = self.ctx.receivers
+        try:
+            await asyncio.sleep(max(0.0, delay - SLEEP_FADE))
+            try:
+                start = int(r.state.get("vol") or 0)
+            except ValueError:
+                start = 0
+            steps = 10
+            for i in range(1, steps + 1):
+                reg.command(r, "vol", round(start * (steps - i) / steps))
+                await asyncio.sleep(SLEEP_FADE / steps)
+            reg.command(r, "pause")
+            if start:
+                reg.command(r, "vol", start)
+        except asyncio.CancelledError:
+            return
+        finally:
+            if self._sleepers.get(r.ip) is asyncio.current_task():
+                del self._sleepers[r.ip]
+                r.sleep_at = None
 
     async def firmware(self, req: web.Request) -> web.Response:
         fw = self.ctx.firmware

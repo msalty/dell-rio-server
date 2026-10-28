@@ -29,6 +29,13 @@ int http_read_headers(int fd, long *content_length, char *extra, int extra_cap, 
  * length or a negative value. */
 int http_get(const char *path, char *buf, int cap, int timeout_ms);
 
+/* UDP socket on which the server asks for an immediate poll, so commands
+ * from the web interface take effect at once instead of at the next regular
+ * poll. Stores the bound port in *port. */
+int net_wake_open(int *port);
+/* Empty the wake socket; returns 1 if the music server sent anything. */
+int net_wake_drain(int fd);
+
 int net_recv(int fd, void *buf, int len);       /* non-blocking-safe recv */
 int net_set_nonblocking(int fd, int on);
 void net_close(int fd);

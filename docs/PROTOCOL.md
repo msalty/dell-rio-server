@@ -139,9 +139,18 @@ first line is `RNG 1`, followed by tab-separated records.
   per line.
 - `GET /ng/track/<fid>` returns key/value lines: title, artist, album, track,
   tracks, dur, kbps, size and so on.
-- `GET /ng/poll?mac=&st=&id=&pos=&vol=&qi=&qn=` reports the receiver's state.
-  The reply carries `lib <version>` and any `cmd …` lines queued by the web
-  interface.
+- `GET /ng/poll?mac=&st=&id=&pos=&vol=&qi=&qn=&wake=` reports the receiver's
+  state every 3 seconds. The reply carries `lib <version>` and any `cmd …`
+  lines queued by the web interface.
+
+The firmware listens on UDP port 21076 (or another free port, reported as
+`wake`). When the web interface queues a command, the server sends a datagram
+there and the receiver polls at once, so commands take effect within one HTTP
+round trip instead of up to 3 seconds later. The firmware ignores datagrams
+from any address other than the music server's. After running commands it
+polls again 300 ms later to report its new state. While a slider is dragged,
+the server keeps only the newest `vol` (or `seek`) command the receiver hasn't
+collected yet.
 
 Nodes are paths that narrow step by step: `artists`, `ar:12`, `ar:12/al:40`,
 `ar:12/all`, `ge:3/ar:12/al:40`, `pl:2`, and `q:7` for a queue created by the
