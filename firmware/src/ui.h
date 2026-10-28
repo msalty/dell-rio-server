@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 void ui_boot_screen(const char *line1, const char *line2);
+void ui_boot_intro(const char *line1);
 void ui_init(void);
 void ui_key(int key);
 void ui_tick(uint32_t now);

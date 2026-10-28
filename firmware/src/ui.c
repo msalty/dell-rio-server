@@ -12,11 +12,12 @@
 #include "ui.h"
 #include "gfx.h"
 #include "hw.h"
+#include "logo.h"
 #include "net.h"
 #include "player.h"
 #include "sys.h"
 
-#define VERSION "1.0"
+#define VERSION "1.1"
 #define WIN 24
 #define ROWS 4
 #define ROW_H 13
@@ -423,17 +424,32 @@ static void render(void)
     dirty = 0;
 }
 
-void ui_boot_screen(const char *line1, const char *line2)
+/* The logo sits where the kernel's splash screen draws it (tools/mklogo.py),
+ * so the hand-over from kernel to firmware is seamless. */
+static void draw_boot_screen(const char *line1, const char *line2, int glint)
 {
     gfx_clear();
-    gfx_text_center(&font_large, 8, "Rio", 3);
-    gfx_text_center(&font_small, 26, "RioServer NG " VERSION, 2);
-    gfx_hline(24, 37, 80, 1);
+    gfx_bitmap(logo_data, LOGO_W, LOGO_H, 0, 0, glint);
     if (line1)
-        gfx_text_center(&font_medium, 39, line1, 3);
+        gfx_text_center(&font_medium, line2 ? 40 : 45, line1, 3);
     if (line2)
-        gfx_text_center(&font_small, 53, line2, 2);
+        gfx_text_center(&font_small, 54, line2, 2);
     display_push();
+}
+
+void ui_boot_screen(const char *line1, const char *line2)
+{
+    draw_boot_screen(line1, line2, GLINT_NONE);
+}
+
+void ui_boot_intro(const char *line1)
+{
+    /* a bright band sweeps across the logo, like the display warming up */
+    for (int g = -12; g < LOGO_W + 12; g += 6) {
+        draw_boot_screen(line1, 0, g);
+        sys_nanosleep(25);
+    }
+    draw_boot_screen(line1, 0, GLINT_NONE);
 }
 
 /* ---- actions ----------------------------------------------------------- */

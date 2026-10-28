@@ -12,12 +12,12 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi qemu-user ffmpeg
+          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi qemu-user ffmpeg zopfli
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install Python dependencies
-        run: pip install -r server/requirements.txt pytest pytest-asyncio pillow
+        run: pip install -r server/requirements.txt pytest pytest-asyncio pillow unicorn
       - name: Build firmware
         run: make -C firmware
       - name: Run tests (server + firmware under qemu)

@@ -49,6 +49,16 @@ void gfx_text_fit(const struct font *f, int x, int y, int maxw, const char *s, i
 void gfx_text_center(const struct font *f, int y, const char *s, int shade);
 void gfx_text_right(const struct font *f, int xr, int y, const char *s, int shade, int ink);
 
+/*
+ * Draw a 4-level bitmap (rows of ceil(w/4) bytes, 2 bits per pixel, leftmost
+ * pixel in the low bits). `glint` animates a power-up sweep: pixels to the
+ * right of the slanted line x + y/4 = glint glow dimly, a band just behind it
+ * is drawn at full brightness, and the rest normally. Pass GLINT_NONE for a
+ * plain draw.
+ */
+#define GLINT_NONE (-1000)
+void gfx_bitmap(const uint8_t *data, int w, int h, int x, int y, int glint);
+
 /* small icons, drawn in a 7x7 box */
 #define ICON_PLAY 0
 #define ICON_PAUSE 1

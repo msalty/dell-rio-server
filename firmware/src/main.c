@@ -51,7 +51,7 @@ int main(int argc, char **argv)
     display_power(1);
     display_backlight(1);
     srand32(time_ms() ^ 0x5eed1234u);
-    ui_boot_screen("Starting...", 0);
+    ui_boot_intro("Starting...");
     audio_open();
     player_init();
 
