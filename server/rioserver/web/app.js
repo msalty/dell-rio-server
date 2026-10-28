@@ -34,6 +34,10 @@ const ICON = {
   stop: '<svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z" class="fill"/></svg>',
   moon: '<svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>',
 };
+// The firmware treats buffering as playing (pressing toggle pauses it), so the
+// play/pause button should show pause for both.
+const rxPlaying = (st) => !!st && (st.st === "play" || st.st === "buffer");
+
 const icon = (name) => h("span", { html: ICON[name], style: "display:inline-flex" });
 
 async function api(path, opts = {}) {
@@ -313,7 +317,7 @@ function renderNowPlaying() {
     const r = Player.receiver;
     const st = r && r.state;
     t = st && st.track;
-    playing = st && st.st === "play";
+    playing = rxPlaying(st);
     sub = t ? `${t.artist} — ${t.album}` : (r ? `${r.name} · ${r.online ? "idle" : "offline"}` : "");
     if (st && st.vol && !isBusy($("#volume"))) $("#volume").value = st.vol;
   } else {
@@ -322,6 +326,7 @@ function renderNowPlaying() {
     if (t) sub = `${t.artist} — ${t.album}`;
   }
   bar.classList.toggle("playing", !!playing);
+  $("#btn-play").setAttribute("aria-label", playing ? "Pause" : "Play");
   const art = $("#np-art");
   $("#np-title").textContent = t ? t.title : "Nothing playing";
   $("#np-title").dataset.album = t ? t.album_id : "";
@@ -716,8 +721,12 @@ function receiverCard(ip) {
     sleepInfo.textContent = left ? `Stops in ${plural(left, "minute")}` : "";
     if (!left && document.activeElement !== sleep) sleep.value = "0";
     send.hidden = !(rx.firmware === "ng" && rx.online);
-    const want = st.st === "play" ? "pause" : "play";
-    if (playIcon !== want) { playBtn.innerHTML = ICON[want]; playIcon = want; }
+    const want = rxPlaying(st) ? "pause" : "play";
+    if (playIcon !== want) {
+      playBtn.innerHTML = ICON[want];
+      playBtn.setAttribute("aria-label", want === "pause" ? "Pause" : "Play");
+      playIcon = want;
+    }
     if (st.vol && !isBusy(vol)) { vol.value = st.vol; volLabel.textContent = st.vol; }
   }
   return { el, update };
@@ -853,3 +862,7 @@ pollStatus();
 pollReceivers();
 schedulePoll();
 renderNowPlaying();
+
+// Lets phones install the web interface as an app. Browsers only allow this
+// over HTTPS (or on localhost); elsewhere navigator.serviceWorker is missing.
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
