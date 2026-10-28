@@ -16,7 +16,7 @@ tab-separated records.
       total  <n>, then one hex fid per line
   GET /ng/track/<fid>
       key/value lines: title, artist, album, track, tracks, dur, kbps, ...
-  GET /ng/poll?mac=..&st=..&id=..&pos=..&vol=..&qi=..&qn=..&wake=<port>
+  GET /ng/poll?mac=..&st=..&id=..&pos=..&vol=..&qi=..&qn=..&wake=<port>&stall=<ms>
       reports playback state; the reply carries queued commands from the web
       UI ("cmd <verb> [args...]") and the library version ("lib <n>"). When a
       command is queued the server sends a UDP datagram to <port> on the
@@ -42,6 +42,10 @@ from .library import sort_key as _sort
 log = logging.getLogger(__name__)
 
 QUEUE_LIMIT = 10000
+# Receivers report the longest time their player loop was held up since the
+# previous poll. The audio device buffers only a fraction of a second, so a
+# longer hold-up is probably an audible skip.
+STALL_WARN_MS = 250
 
 
 class NodeError(Exception):
@@ -308,6 +312,9 @@ class NGProtocol:
         except ValueError:
             r.wake_port = 0
         state = {k: q.get(k) for k in ("st", "id", "pos", "vol", "qi", "qn", "shuf", "rep", "ver")}
+        stall = q.get("stall", "")
+        if stall.isdigit() and int(stall) >= STALL_WARN_MS:
+            log.warning("%s: playback was held up for %s ms; audio may have skipped", r.name, stall)
         fid = ids.parse_hex(state.get("id") or "")
         kind = ids.decode_fid(fid) if fid else None
         if kind and kind[0] == "track":

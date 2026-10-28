@@ -718,23 +718,33 @@ static void run_command(char **f, int nf)
     dirty = 1;
 }
 
-int ui_poll_server(void)
+static struct http_async poll_req = {.fd = -1};
+static char poll_buf[2048];
+
+int ui_poll_start(int timeout_ms, unsigned stall_ms)
 {
     static const char *const states[] = {"stop", "buffer", "play", "pause"};
     static const char *const repeats[] = {"off", "all", "one"};
-    char path[256], buf[2048];
+    char path[256];
     snprintf(path, sizeof(path),
-             "/ng/poll?mac=%s&st=%s&id=%lx&pos=%lu&vol=%d&qi=%d&qn=%d&shuf=%d&rep=%s&wake=%d&ver=" VERSION,
+             "/ng/poll?mac=%s&st=%s&id=%lx&pos=%lu&vol=%d&qi=%d&qn=%d&shuf=%d&rep=%s&wake=%d&stall=%u&ver=" VERSION,
              net_mac(), standby ? "standby" : states[P.state],
              (unsigned long)(P.have_track ? P.cur.fid : 0), (unsigned long)player_position_ms(),
-             P.volume, P.qi, P.qlen, P.shuffle, repeats[P.repeat], wake_port);
-    /* Short timeout: this blocks the main loop, and audio must keep flowing
-     * even if the server is slow. A missed poll is simply retried. */
-    int n = http_get(path, buf, sizeof(buf), 400);
+             P.volume, P.qi, P.qlen, P.shuffle, repeats[P.repeat], wake_port, stall_ms);
+    return http_async_start(&poll_req, path, poll_buf, sizeof(poll_buf), timeout_ms);
+}
+
+int ui_poll_fd(int *want_write) { return http_async_fd(&poll_req, want_write); }
+
+int ui_poll_step(void)
+{
+    int n = http_async_step(&poll_req);
+    if (n == HTTP_PENDING)
+        return -1;
     if (n <= 0)
         return 0;
     int commands = 0;
-    for (char *line = buf; line && *line;) {
+    for (char *line = poll_buf; line && *line;) {
         char *next = strchr(line, '\n');
         if (next)
             *next++ = 0;

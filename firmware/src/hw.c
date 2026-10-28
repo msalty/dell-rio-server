@@ -143,7 +143,15 @@ static void audio_flush_block(void)
         /* Emulate a device that consumes audio in real time with ~0.3s of
          * buffering, so playback timing behaves as on the hardware. */
         uint32_t now = time_ms();
-        if (!sim_audio_start || now - sim_audio_start > sim_audio_frames / 44 + 1000) {
+        if (sim_audio_start) {
+            /* The device ran dry before this block arrived: an audible gap. */
+            int32_t late = (int32_t)(now - (sim_audio_start + sim_audio_frames / 44));
+            if (late > 0) {
+                dlog("audio: underrun %d ms\n", (int)late);
+                sim_audio_start = 0;
+            }
+        }
+        if (!sim_audio_start) {
             sim_audio_start = now;
             sim_audio_frames = 0;
         }

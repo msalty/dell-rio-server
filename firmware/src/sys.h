@@ -54,6 +54,8 @@
 #define EINTR 4
 #define EAGAIN 11
 #define EINPROGRESS 115
+#define EALREADY 114
+#define EISCONN 106
 
 #define O_RDONLY 0
 #define O_WRONLY 1

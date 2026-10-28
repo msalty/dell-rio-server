@@ -4,11 +4,13 @@ Skipped unless qemu-arm is installed and the firmware has been built
 (cd firmware && make init).
 """
 
+import contextlib
 import os
 import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -32,10 +34,10 @@ def free_port(kind=socket.SOCK_STREAM) -> int:
     return port
 
 
-@pytest.fixture()
-def server(music_dir, tmp_path):
+@contextlib.contextmanager
+def run_server(music_dir, data_dir):
     http = free_port()
-    env = dict(os.environ, RIO_MUSIC_DIR=str(music_dir), RIO_DATA_DIR=str(tmp_path / "data"),
+    env = dict(os.environ, RIO_MUSIC_DIR=str(music_dir), RIO_DATA_DIR=str(data_dir),
                RIO_HTTP_PORT=str(http), RIO_WEB_PORT="0", RIO_ENABLE_BOOT="0",
                RIO_SSDP_PORT=str(free_port(socket.SOCK_DGRAM)), RIO_WATCH="0")
     proc = subprocess.Popen([sys.executable, "-m", "rioserver"], cwd=ROOT / "server", env=env,
@@ -48,9 +50,59 @@ def server(music_dir, tmp_path):
         except OSError:
             time.sleep(0.2)
     time.sleep(1.0)  # initial scan
-    yield f"127.0.0.1:{http}"
-    proc.terminate()
-    proc.wait(timeout=10)
+    try:
+        yield f"127.0.0.1:{http}"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+@pytest.fixture()
+def server(music_dir, tmp_path):
+    with run_server(music_dir, tmp_path / "data") as addr:
+        yield addr
+
+
+@contextlib.contextmanager
+def slow_poll_proxy(upstream: str, delay: float):
+    """An HTTP/1.0 proxy that answers the receiver's status polls late, as a
+    busy server or a lost packet would."""
+    host, port = upstream.split(":")
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(16)
+
+    def handle(client):
+        with client:
+            head = b""
+            while b"\r\n\r\n" not in head:
+                chunk = client.recv(4096)
+                if not chunk:
+                    return
+                head += chunk
+            if head.startswith(b"GET /ng/poll"):
+                time.sleep(delay)
+            with socket.create_connection((host, int(port))) as up:
+                up.sendall(head)
+                while chunk := up.recv(65536):
+                    try:
+                        client.sendall(chunk)
+                    except OSError:
+                        return
+
+    def serve():
+        while True:
+            try:
+                client, _ = listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=handle, args=(client,), daemon=True).start()
+
+    threading.Thread(target=serve, daemon=True).start()
+    try:
+        yield f"127.0.0.1:{listener.getsockname()[1]}"
+    finally:
+        listener.close()
 
 
 def lit_pixels(rows) -> int:
@@ -107,3 +159,44 @@ def test_web_commands_take_effect_immediately(server, tmp_path):
             time.sleep(0.8)
     finally:
         rx.stop()
+
+
+@pytest.mark.parametrize("delay", [0.35, 1.0])
+def test_slow_server_does_not_interrupt_audio(tmp_path, delay):
+    """A slow reply to the receiver's status poll used to stall playback for
+    up to its timeout, longer than the audio device's buffer lasts, and a
+    reply slower than the timeout lost the commands in it."""
+    import json
+    import urllib.request
+
+    from simulate import Receiver
+
+    music = tmp_path / "music" / "Artist" / "Album"
+    music.mkdir(parents=True)
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "anoisesrc=color=pink:duration=14:amplitude=0.3", "-ac", "2", "-ar", "44100",
+                    "-codec:a", "libmp3lame", "-b:a", "320k", "-metadata", "title=Noise",
+                    "-metadata", "artist=Artist", "-metadata", "album=Album", str(music / "01.mp3")],
+                   check=True)
+    with run_server(tmp_path / "music", tmp_path / "data") as upstream, \
+            slow_poll_proxy(upstream, delay) as proxied:
+        rx = Receiver(str(FIRMWARE), proxied, workdir=str(tmp_path / "rx"))
+        try:
+            api = f"http://{upstream}/api"
+            deadline = time.time() + 10
+            while not json.load(urllib.request.urlopen(f"{api}/receivers")) and time.time() < deadline:
+                time.sleep(0.2)
+            ip = json.load(urllib.request.urlopen(f"{api}/receivers"))[0]["ip"]
+            album = json.load(urllib.request.urlopen(f"{api}/albums"))[0]["id"]
+            req = urllib.request.Request(f"{api}/receivers/{ip}/play", data=json.dumps({"album_id": album}).encode(),
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req).read()
+            deadline = time.time() + 10
+            while "playing" not in rx.console() and time.time() < deadline:
+                time.sleep(0.2)
+            assert "playing" in rx.console(), rx.console()
+            time.sleep(9)  # three regular polls
+            log = rx.console()
+            assert "audio: underrun" not in log, log
+        finally:
+            rx.stop()
