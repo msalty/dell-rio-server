@@ -287,6 +287,30 @@ async def test_receiver_names_are_remembered(library, tmp_path):
     assert reg.get("10.0.0.99").name == "Receiver 00:00:01"
 
 
+async def test_booted_receiver_polling_through_a_proxy_is_one_receiver(client):
+    reg = client.ctx.receivers
+    # it boots from its LAN address: NFS mount (no MAC), then SSDP (with MAC)...
+    reg.touch("192.168.1.40", stage="booting")
+    reg.touch("192.168.1.40", mac="00:90:4B:00:00:01", stage="booting")
+    # ...then the firmware's HTTP requests arrive from a proxy on loopback
+    await client.get("/ng/poll?mac=00:90:4b:00:00:01&st=play&vol=40")
+    await client.get("/ng/menu/root")
+    rxs = await (await client.get("/api/receivers")).json()
+    assert len(rxs) == 1
+    assert rxs[0]["ip"] == "192.168.1.40"  # shown, and where wake-ups go
+    assert rxs[0]["stage"] == "running" and rxs[0]["controllable"]
+    await client.post("/api/receivers/192.168.1.40/command", json={"cmd": "next"})
+    rows = ng_lines(await (await client.get("/ng/poll?mac=00:90:4b:00:00:01&st=play")).text())
+    assert ["cmd", "next"] in rows
+    # the next boot has a new DHCP address: still the same card
+    reg.touch("192.168.1.41", mac="00:90:4b:00:00:01", stage="booting")
+    assert [r.ip for r in reg.all()] == ["192.168.1.41"]
+    assert reg.get("192.168.1.40") is None and reg.get("127.0.0.1") is reg.get("192.168.1.41")
+    # a different unit given the old address gets its own card
+    reg.touch("192.168.1.41", mac="00:90:4b:00:00:02", stage="booting")
+    assert sorted(r.mac for r in reg.all()) == ["00:90:4b:00:00:01", "00:90:4b:00:00:02"]
+
+
 async def test_sleep_timer_fades_out_and_restores_volume(client, monkeypatch):
     import asyncio
 

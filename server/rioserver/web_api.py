@@ -394,14 +394,14 @@ class WebAPI:
             minutes = float(body.get("minutes", 0))
         except (TypeError, ValueError):
             raise web.HTTPBadRequest(text="minutes must be a number")
-        old = self._sleepers.pop(r.id, None)
+        old = self._sleepers.pop(r.key, None)
         if old:
             old.cancel()
         r.sleep_at = None
         if minutes > 0:
             delay = min(minutes, 24 * 60) * 60
             r.sleep_at = time.time() + delay
-            self._sleepers[r.id] = asyncio.create_task(self._sleep(r, delay))
+            self._sleepers[r.key] = asyncio.create_task(self._sleep(r, delay))
         return web.json_response(r.to_json())
 
     async def _sleep(self, r, delay: float) -> None:
@@ -422,8 +422,8 @@ class WebAPI:
         except asyncio.CancelledError:
             return
         finally:
-            if self._sleepers.get(r.id) is asyncio.current_task():
-                del self._sleepers[r.id]
+            if self._sleepers.get(r.key) is asyncio.current_task():
+                del self._sleepers[r.key]
                 r.sleep_at = None
 
     async def firmware(self, req: web.Request) -> web.Response:
