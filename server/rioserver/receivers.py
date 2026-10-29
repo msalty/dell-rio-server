@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import socket
@@ -16,6 +17,13 @@ ONLINE_SECONDS = 20  # NG firmware polls every few seconds
 # Commands where only the latest one matters: while a slider is dragged, a
 # newer value replaces one the receiver hasn't collected yet.
 LATEST_WINS = {"vol", "seek"}
+
+
+def _is_loopback(ip: str) -> bool:
+    try:
+        return ipaddress.ip_address(ip).is_loopback
+    except ValueError:
+        return False
 
 
 @dataclass
@@ -69,25 +77,53 @@ class ReceiverRegistry:
                 self._names = {str(k): str(v) for k, v in json.loads(names_path.read_text()).items()}
             except (OSError, ValueError, AttributeError):
                 pass
+        # A receiver can reach us from more than one address: it boots (SSDP,
+        # NFS) from its own LAN address, but its HTTP requests may arrive from
+        # a proxy in front of the server. Every address maps to the receiver.
         self._by_ip: dict[str, Receiver] = {}
+        self._by_mac: dict[str, Receiver] = {}
         self._queues: dict[int, list[int]] = {}
         self._next_queue = 1
         self._sock: socket.socket | None = None
 
     def touch(self, ip: str, *, mac: str | None = None, firmware: str | None = None,
               stage: str | None = None) -> Receiver:
-        r = self._by_ip.get(ip)
+        mac = mac.lower() if mac else None
+        other = self._by_ip.get(ip)
+        r = self._by_mac.get(mac) if mac else None
         if r is None:
-            r = self._by_ip[ip] = Receiver(ip)
-        r.last_seen = time.time()
+            # a different MAC at a known address: DHCP gave it to another unit
+            r = other if other and not (mac and other.mac and other.mac != mac) else Receiver(ip)
+        if other is not None and other is not r:
+            self._release(other, ip)
+        self._by_ip[ip] = r
         if mac:
-            r.mac = mac.lower()
+            r.mac = mac
+            self._by_mac[mac] = r
+        if r.ip != ip and (_is_loopback(r.ip) or not _is_loopback(ip)):
+            # Moved to a new address. Keep the LAN address over a proxy's
+            # loopback one: it is what we show and where wake-ups must go.
+            if not _is_loopback(r.ip) and self._by_ip.get(r.ip) is r:
+                del self._by_ip[r.ip]
+            r.ip = ip
+        r.last_seen = time.time()
         r.label = self._names.get(r.key, "")
         if firmware and (firmware == "ng" or r.firmware == "unknown"):
             r.firmware = firmware
         if stage:
             r.stage = stage
         return r
+
+    def _release(self, r: Receiver, ip: str) -> None:
+        """Another receiver has taken over `ip`; forget `r` if that was its
+        only address (an entry without a MAC is just this address)."""
+        if r.ip != ip:
+            return
+        rest = [a for a, x in self._by_ip.items() if x is r and a != ip]
+        if rest:
+            r.ip = rest[0]
+        elif r.mac and self._by_mac.get(r.mac) is r:
+            del self._by_mac[r.mac]
 
     def rename(self, r: Receiver, name: str) -> None:
         """Name a receiver ("Kitchen"); an empty name restores the default.
@@ -134,8 +170,8 @@ class ReceiverRegistry:
 
     def all(self) -> list[Receiver]:
         cutoff = time.time() - 7 * 86400
-        return sorted((r for r in self._by_ip.values() if r.last_seen > cutoff),
-                      key=lambda r: -r.last_seen)
+        unique = {id(r): r for r in self._by_ip.values()}.values()
+        return sorted((r for r in unique if r.last_seen > cutoff), key=lambda r: -r.last_seen)
 
     # Ad-hoc queues let the web UI hand any list of tracks to a receiver.
     def store_queue(self, track_ids: list[int]) -> int:
