@@ -3,8 +3,8 @@
 "Receivers" are everything the web interface can send music to: Rio
 receivers, which keep their own play queue and collect commands when they
 poll, and players the server feeds track by track (players.QueuePlayer:
-Chromecasts and the like). Rio receivers are known by IP address, other
-players by an id such as "cast-<uuid>".
+Chromecasts and the like). Rio receivers are known by MAC address (or by
+IP until they report one), other players by an id such as "cast-<uuid>".
 """
 
 from __future__ import annotations
@@ -51,7 +51,9 @@ class Receiver:
 
     @property
     def id(self) -> str:
-        return self.ip
+        """How the web interface refers to this receiver: its MAC, which stays
+        the same when DHCP or a proxy changes the address we see."""
+        return self.key
 
     @property
     def key(self) -> str:
@@ -66,7 +68,7 @@ class Receiver:
     def to_json(self) -> dict:
         online = time.time() - self.last_seen < (ONLINE_SECONDS if self.firmware == "ng" else 300)
         return {
-            "id": self.ip,
+            "id": self.id,
             "kind": self.kind,
             "ip": self.ip,
             "mac": self.mac,
@@ -195,7 +197,9 @@ class ReceiverRegistry:
             log.debug("could not wake %s: %s", r.ip, exc)
 
     def get(self, receiver_id: str):
-        return self._by_ip.get(receiver_id) or self._players.get(receiver_id)
+        """A receiver by id (MAC), by any of its addresses, or a player by id."""
+        return (self._by_mac.get(receiver_id.lower()) or self._by_ip.get(receiver_id)
+                or self._players.get(receiver_id))
 
     def all(self) -> list:
         cutoff = time.time() - 7 * 86400

@@ -311,6 +311,24 @@ async def test_booted_receiver_polling_through_a_proxy_is_one_receiver(client):
     assert sorted(r.mac for r in reg.all()) == ["00:90:4b:00:00:01", "00:90:4b:00:00:02"]
 
 
+async def test_receivers_are_addressed_by_mac(client):
+    reg = client.ctx.receivers
+    reg.touch("192.168.1.40", mac="00:90:4B:00:00:01", firmware="ng", stage="running")
+    rx = (await (await client.get("/api/receivers")).json())[0]
+    assert rx["id"] == "00:90:4b:00:00:01" and rx["ip"] == "192.168.1.40"
+    # the router hands it a new address; the id the web interface saved still works
+    reg.touch("192.168.1.41", mac="00:90:4b:00:00:01")
+    r = await client.post("/api/receivers/00:90:4b:00:00:01/command", json={"cmd": "next"})
+    assert r.status == 200
+    # so does its current address, for anything that still uses one
+    r = await client.post("/api/receivers/192.168.1.41/command", json={"cmd": "toggle"})
+    assert r.status == 200
+    rows = ng_lines(await (await client.get("/ng/poll?mac=00:90:4b:00:00:01&st=play")).text())
+    assert [r[1:] for r in rows if r[0] == "cmd"] == [["next"], ["toggle"]]
+    # until it reports a MAC, a receiver is known by its address
+    assert reg.touch("192.168.1.50").id == "192.168.1.50"
+
+
 async def test_sleep_timer_fades_out_and_restores_volume(client, monkeypatch):
     import asyncio
 

@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 
 RESTART_MS = 3000  # "previous" restarts the track if it has played this long
 MAX_ERRORS = 3  # tracks in a row that fail to play before the queue stops
+VOLUME_HOLD = 1.5  # seconds to trust a volume we set over the device's reports
 
 
 def server_url(cfg, peer_ip: str) -> str:
@@ -66,6 +67,7 @@ class QueuePlayer:
         self._pos_ms = 0
         self._pos_at = time.monotonic()
         self._vol: int | None = None
+        self._vol_hold = 0.0  # until then, device volume reports predate our change
         self._other_app = ""  # set while another app (Spotify, YouTube, ...) has the device
         self._errors = 0
         self._ended_index: int | None = None  # the queue position whose end was handled
@@ -147,6 +149,7 @@ class QueuePlayer:
             if verb == "vol":
                 number = min(100, number)
                 self._vol = number  # show it right away
+                self._vol_hold = time.monotonic() + VOLUME_HOLD
             # While a slider is dragged only the latest value matters.
             with self._lock:
                 queued = verb in self._pending
@@ -180,6 +183,7 @@ class QueuePlayer:
         if number is None:
             return
         if verb == "vol":
+            self._vol_hold = time.monotonic() + VOLUME_HOLD
             self._device_volume(number / 100)
         else:
             self._seek(int(number))
@@ -285,6 +289,8 @@ class QueuePlayer:
             self._set_state("stop", 0)
 
     def _on_volume(self, vol: int) -> None:
+        if time.monotonic() < self._vol_hold:
+            return  # a report from before the volume we're setting arrived
         self._vol = max(0, min(100, vol))
 
     def _on_online(self, online: bool) -> None:

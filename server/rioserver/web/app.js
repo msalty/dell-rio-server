@@ -395,6 +395,13 @@ async function pollReceivers() {
   if (JSON.stringify(want) !== JSON.stringify(have)) {
     sel.replaceChildren(...want.map(([v, label]) => h("option", { value: v }, label)));
   }
+  // Receivers used to be chosen by IP address; a saved choice moves to the
+  // receiver's id (its MAC), which survives a new address from the router.
+  const moved = Player.target && Player.receivers.find((r) => r.id !== Player.target && r.ip === Player.target);
+  if (moved) {
+    Player.target = moved.id;
+    localStorage.setItem("rio.target", moved.id);
+  }
   if (Player.target && !Player.receivers.some((r) => r.id === Player.target)) Player.target = "";
   sel.value = Player.target;
   const online = Player.receivers.filter((r) => r.online).length;
