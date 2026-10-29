@@ -12,7 +12,9 @@ from aiohttp import web
 
 from . import ids
 from .firmware import FirmwareStore
+from .receivers import Receiver
 from .rio_classic import send_audio
+from .rio_ng import NGProtocol, NodeError
 
 log = logging.getLogger(__name__)
 
@@ -98,6 +100,7 @@ class WebAPI:
     def __init__(self, ctx):
         self.ctx = ctx
         self.lib = ctx.library
+        self._ng = NGProtocol(ctx)  # resolves what to play for players the server feeds
         self._sleepers: dict[str, asyncio.Task] = {}
         self._artist_art: dict[int, Path | int | None] = {}
         self._artist_art_version = None
@@ -123,10 +126,10 @@ class WebAPI:
             web.get("/api/art/artist/{id:\\d+}", self.artist_art),
             web.get("/api/stream/{id:\\d+}", self.stream),
             web.get("/api/receivers", self.receivers),
-            web.post("/api/receivers/{ip}/play", self.receiver_play),
-            web.post("/api/receivers/{ip}/command", self.receiver_command),
-            web.post("/api/receivers/{ip}/name", self.receiver_name),
-            web.post("/api/receivers/{ip}/sleep", self.receiver_sleep),
+            web.post("/api/receivers/{id}/play", self.receiver_play),
+            web.post("/api/receivers/{id}/command", self.receiver_command),
+            web.post("/api/receivers/{id}/name", self.receiver_name),
+            web.post("/api/receivers/{id}/sleep", self.receiver_sleep),
             web.get("/api/firmware", self.firmware),
             web.post("/api/firmware", self.firmware_select),
             web.get("/api/firmware/{name}/download", self.firmware_download),
@@ -326,10 +329,10 @@ class WebAPI:
         return web.json_response([r.to_json() for r in self.ctx.receivers.all()])
 
     def _receiver(self, req: web.Request):
-        r = self.ctx.receivers.get(req.match_info["ip"])
+        r = self.ctx.receivers.get(req.match_info["id"])
         if r is None:
             raise web.HTTPNotFound(text="unknown receiver")
-        if r.firmware != "ng":
+        if isinstance(r, Receiver) and r.firmware != "ng":
             raise web.HTTPConflict(text="this receiver runs firmware that can't be remote controlled")
         return r
 
@@ -351,7 +354,16 @@ class WebAPI:
             node = f"pl:{int(body['playlist_id'])}"
         else:
             raise web.HTTPBadRequest(text="nothing to play")
-        self.ctx.receivers.command(r, "play", node, index, shuffle)
+        if isinstance(r, Receiver):
+            self.ctx.receivers.command(r, "play", node, index, shuffle)
+        else:
+            try:
+                tracks = await self._run(self._ng.tracks_for, node)
+            except NodeError:
+                raise web.HTTPBadRequest(text="nothing to play")
+            if not tracks:
+                raise web.HTTPNotFound(text="nothing to play")
+            r.play(tracks, index, bool(shuffle))
         return web.json_response({"ok": True, "node": node})
 
     async def receiver_command(self, req: web.Request) -> web.Response:
@@ -367,7 +379,7 @@ class WebAPI:
         return web.json_response({"ok": True})
 
     async def receiver_name(self, req: web.Request) -> web.Response:
-        r = self.ctx.receivers.get(req.match_info["ip"])
+        r = self.ctx.receivers.get(req.match_info["id"])
         if r is None:
             raise web.HTTPNotFound(text="unknown receiver")
         body = await req.json()
@@ -382,14 +394,14 @@ class WebAPI:
             minutes = float(body.get("minutes", 0))
         except (TypeError, ValueError):
             raise web.HTTPBadRequest(text="minutes must be a number")
-        old = self._sleepers.pop(r.ip, None)
+        old = self._sleepers.pop(r.id, None)
         if old:
             old.cancel()
         r.sleep_at = None
         if minutes > 0:
             delay = min(minutes, 24 * 60) * 60
             r.sleep_at = time.time() + delay
-            self._sleepers[r.ip] = asyncio.create_task(self._sleep(r, delay))
+            self._sleepers[r.id] = asyncio.create_task(self._sleep(r, delay))
         return web.json_response(r.to_json())
 
     async def _sleep(self, r, delay: float) -> None:
@@ -410,8 +422,8 @@ class WebAPI:
         except asyncio.CancelledError:
             return
         finally:
-            if self._sleepers.get(r.ip) is asyncio.current_task():
-                del self._sleepers[r.ip]
+            if self._sleepers.get(r.id) is asyncio.current_task():
+                del self._sleepers[r.id]
                 r.sleep_at = None
 
     async def firmware(self, req: web.Request) -> web.Response:

@@ -1,4 +1,11 @@
-"""Tracks the receivers on the network and relays web-UI commands to them."""
+"""Tracks the receivers on the network and relays web-UI commands to them.
+
+"Receivers" are everything the web interface can send music to: Rio
+receivers, which keep their own play queue and collect commands when they
+poll, and players the server feeds track by track (players.QueuePlayer:
+Chromecasts and the like). Rio receivers are known by IP address, other
+players by an id such as "cast-<uuid>".
+"""
 
 from __future__ import annotations
 
@@ -20,6 +27,8 @@ LATEST_WINS = {"vol", "seek"}
 
 @dataclass
 class Receiver:
+    kind = "rio"
+
     ip: str
     mac: str | None = None
     firmware: str = "unknown"  # "ng", "stock" or "unknown"
@@ -31,6 +40,10 @@ class Receiver:
     wake_port: int = 0  # UDP port where the firmware listens for "poll now"
     label: str = ""  # name given in the web interface
     sleep_at: float | None = None  # sleep timer: when playback stops
+
+    @property
+    def id(self) -> str:
+        return self.ip
 
     @property
     def key(self) -> str:
@@ -45,6 +58,8 @@ class Receiver:
     def to_json(self) -> dict:
         online = time.time() - self.last_seen < (ONLINE_SECONDS if self.firmware == "ng" else 300)
         return {
+            "id": self.ip,
+            "kind": self.kind,
             "ip": self.ip,
             "mac": self.mac,
             "name": self.name,
@@ -70,6 +85,7 @@ class ReceiverRegistry:
             except (OSError, ValueError, AttributeError):
                 pass
         self._by_ip: dict[str, Receiver] = {}
+        self._players: dict[str, object] = {}  # QueuePlayers by id
         self._queues: dict[int, list[int]] = {}
         self._next_queue = 1
         self._sock: socket.socket | None = None
@@ -89,6 +105,15 @@ class ReceiverRegistry:
             r.stage = stage
         return r
 
+    def add(self, player) -> None:
+        """Add a player the server feeds track by track (a QueuePlayer)."""
+        player.label = self._names.get(player.key, "")
+        self._players[player.id] = player
+
+    def close(self) -> None:
+        for p in self._players.values():
+            p.close()
+
     def rename(self, r: Receiver, name: str) -> None:
         """Name a receiver ("Kitchen"); an empty name restores the default.
         Names are remembered by MAC address, so they survive a new IP."""
@@ -105,8 +130,12 @@ class ReceiverRegistry:
                 log.warning("could not save receiver names: %s", exc)
 
     def command(self, r: Receiver, *args) -> None:
-        """Queue a command for an NG receiver and ask it to collect it now."""
+        """Queue a command for an NG receiver and ask it to collect it now,
+        or pass it straight to a player the server drives."""
         verb = args[0]
+        if not isinstance(r, Receiver):
+            r.command(verb, *args[1:2])
+            return
         if verb in LATEST_WINS:
             for old in [c for c in r.commands if c[0] == verb]:
                 r.commands.remove(old)
@@ -129,13 +158,15 @@ class ReceiverRegistry:
         except OSError as exc:
             log.debug("could not wake %s: %s", r.ip, exc)
 
-    def get(self, ip: str) -> Receiver | None:
-        return self._by_ip.get(ip)
+    def get(self, receiver_id: str):
+        return self._by_ip.get(receiver_id) or self._players.get(receiver_id)
 
-    def all(self) -> list[Receiver]:
+    def all(self) -> list:
         cutoff = time.time() - 7 * 86400
-        return sorted((r for r in self._by_ip.values() if r.last_seen > cutoff),
-                      key=lambda r: -r.last_seen)
+        rio = sorted((r for r in self._by_ip.values() if r.last_seen > cutoff), key=lambda r: -r.last_seen)
+        others = sorted((p for p in self._players.values() if p.online or p.last_seen > cutoff),
+                        key=lambda p: (not p.online, p.name.lower()))
+        return rio + others
 
     # Ad-hoc queues let the web UI hand any list of tracks to a receiver.
     def store_queue(self, track_ids: list[int]) -> int:

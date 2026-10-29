@@ -58,6 +58,10 @@ class Config:
     watch: bool = True  # react to filesystem changes immediately
     watch_polling: bool = False  # use polling instead of inotify (NAS/SMB volumes)
 
+    # Find Chromecasts, Google Home/Nest speakers and speaker groups (mDNS),
+    # so the web interface can send music to them.
+    cast: bool = True
+
     # Show "Name (count)" in the stock player's menus, as JReceiver did.
     classic_show_counts: bool = False
 
@@ -82,6 +86,7 @@ class Config:
         c.rescan_interval = _env_int("RIO_RESCAN_INTERVAL", c.rescan_interval)
         c.watch = _env_bool("RIO_WATCH", c.watch)
         c.watch_polling = _env_bool("RIO_WATCH_POLLING", c.watch_polling)
+        c.cast = _env_bool("RIO_CAST", c.cast)
         c.classic_show_counts = _env_bool("RIO_CLASSIC_SHOW_COUNTS", c.classic_show_counts)
         c.log_level = os.environ.get("RIO_LOG_LEVEL", c.log_level).upper()
         return c

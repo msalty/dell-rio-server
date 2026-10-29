@@ -128,12 +128,12 @@ const isBusy = (input) => !!input && (input._held || Date.now() < (input._busyUn
 // Sends a receiver volume while the slider moves: at most every 150 ms, and
 // always the final value. The server drops values the receiver hasn't
 // collected yet, so nothing piles up.
-function volumeSender(getIp) {
+function volumeSender(getId) {
   let last = 0, timer = null, value = null;
   const send = () => {
     timer = null;
     last = Date.now();
-    post(`/api/receivers/${getIp()}/command`, { cmd: "vol", value }).catch((e) => toast(e.message));
+    post(`/api/receivers/${getId()}/command`, { cmd: "vol", value }).catch((e) => toast(e.message));
   };
   return (v) => {
     value = v;
@@ -155,7 +155,7 @@ const Player = {
   receivers: [],
 
   get current() { return this.queue[this.index]; },
-  get receiver() { return this.receivers.find((r) => r.ip === this.target); },
+  get receiver() { return this.receivers.find((r) => r.id === this.target); },
 
   async playTracks(tracks, index = 0, { shuffle = false } = {}) {
     if (!tracks.length) return;
@@ -318,7 +318,7 @@ function renderNowPlaying() {
     const st = r && r.state;
     t = st && st.track;
     playing = rxPlaying(st);
-    sub = t ? `${t.artist} — ${t.album}` : (r ? `${r.name} · ${r.online ? "idle" : "offline"}` : "");
+    sub = t ? `${t.artist} — ${t.album}` : (r ? `${r.name} · ${!r.online ? "offline" : st && st.app ? `in use by ${st.app}` : "idle"}` : "");
     if (st && st.vol && !isBusy($("#volume"))) $("#volume").value = st.vol;
   } else {
     t = Player.current;
@@ -376,6 +376,10 @@ function markPlaying() {
 
 // ---------------------------------------------------------------- receivers
 
+// Rio receivers need the RioServer NG firmware to take music from here;
+// Chromecasts and other speakers always can.
+const canTarget = (r) => r.kind !== "rio" || r.firmware === "ng";
+
 async function pollReceivers() {
   try {
     Player.receivers = await api("/api/receivers");
@@ -385,13 +389,13 @@ async function pollReceivers() {
   Player._statusAt = Date.now();
   const sel = $("#target");
   const want = [["", "This browser"]].concat(
-    Player.receivers.filter((r) => r.firmware === "ng").map((r) => [r.ip, `${r.name}${r.online ? "" : " (offline)"}`]),
+    Player.receivers.filter(canTarget).map((r) => [r.id, `${r.name}${r.online ? "" : " (offline)"}`]),
   );
   const have = [...sel.options].map((o) => [o.value, o.textContent]);
   if (JSON.stringify(want) !== JSON.stringify(have)) {
     sel.replaceChildren(...want.map(([v, label]) => h("option", { value: v }, label)));
   }
-  if (Player.target && !Player.receivers.some((r) => r.ip === Player.target)) Player.target = "";
+  if (Player.target && !Player.receivers.some((r) => r.id === Player.target)) Player.target = "";
   sel.value = Player.target;
   const online = Player.receivers.filter((r) => r.online).length;
   const pill = $("#receiver-count");
@@ -657,13 +661,26 @@ async function viewSearch(q) {
 const STATE_NAMES = { play: "Playing", pause: "Paused", buffer: "Buffering", stop: "Stopped", standby: "Standby" };
 const FW_NAMES = { ng: "RioServer NG firmware", stock: "Original Rio firmware", unknown: "Booting" };
 
+function receiverMeta(rx) {
+  if (rx.kind === "rio") return `${rx.ip}${rx.mac ? " · " + rx.mac : ""} · ${FW_NAMES[rx.firmware] || rx.firmware}`;
+  return `${rx.model} · ${rx.ip}`;
+}
+
+function receiverIdle(rx) {
+  if (rx.kind === "rio" && rx.firmware === "stock") {
+    return "Browsing with the original firmware. Switch to RioServer NG firmware for remote control.";
+  }
+  if (!rx.online) return `Last seen ${new Date(rx.last_seen * 1000).toLocaleString()}`;
+  return rx.state && rx.state.app ? `In use by ${rx.state.app}` : "Idle";
+}
+
 // A receiver card is built once and then updated in place, so polling never
 // swallows a click or yanks a slider out from under the pointer.
-function receiverCard(ip) {
-  const r = () => Player.receivers.find((x) => x.ip === ip) || {};
-  const cmd = (c, value) => post(`/api/receivers/${ip}/command`, value === undefined ? { cmd: c } : { cmd: c, value })
+function receiverCard(id) {
+  const r = () => Player.receivers.find((x) => x.id === id) || {};
+  const cmd = (c, value) => post(`/api/receivers/${id}/command`, value === undefined ? { cmd: c } : { cmd: c, value })
     .then(() => setTimeout(pollReceivers, 350)).catch((e) => toast(e.message));
-  const sendVolume = volumeSender(() => ip);
+  const sendVolume = volumeSender(() => id);
   const dot = h("span", { class: "dot" });
   const name = h("span", { class: "rx-name" });
   const rename = h("button", {
@@ -672,7 +689,7 @@ function receiverCard(ip) {
     onclick: () => {
       const n = prompt("Name this receiver (for example Kitchen). Leave empty for the default name.", r().label || "");
       if (n === null) return;
-      post(`/api/receivers/${ip}/name`, { name: n }).then(pollReceivers).catch((e) => toast(e.message));
+      post(`/api/receivers/${id}/name`, { name: n }).then(pollReceivers).catch((e) => toast(e.message));
     },
   });
   const meta = h("div", { class: "meta" });
@@ -690,7 +707,7 @@ function receiverCard(ip) {
     h("span", { html: ICON.speaker, style: "display:inline-flex;color:var(--muted)" }), vol, volLabel);
   const sleepInfo = h("span", { class: "meta" });
   const sleep = h("select", { class: "sleep", "aria-label": "Sleep timer",
-    onchange: (e) => post(`/api/receivers/${ip}/sleep`, { minutes: Number(e.target.value) })
+    onchange: (e) => post(`/api/receivers/${id}/sleep`, { minutes: Number(e.target.value) })
       .then(() => { toast(Number(e.target.value) ? `Sleeping in ${e.target.value} min` : "Sleep timer off"); pollReceivers(); })
       .catch((err) => toast(err.message)) },
     [["0", "Sleep timer"], ["15", "15 min"], ["30", "30 min"], ["45", "45 min"], ["60", "1 hour"], ["90", "90 min"]]
@@ -699,7 +716,7 @@ function receiverCard(ip) {
   const ctrl = h("div", { class: "controls" }, transport, volRow, sleepRow);
   const send = h("button", {
     class: "btn send",
-    onclick: () => { Player.target = ip; localStorage.setItem("rio.target", ip); $("#target").value = ip; renderNowPlaying(); toast(`Playing on ${r().name}`); },
+    onclick: () => { Player.target = id; localStorage.setItem("rio.target", id); $("#target").value = id; renderNowPlaying(); toast(`Playing on ${r().name}`); },
   }, "Send music here");
   const el = h("div", { class: "card" }, h("h3", {}, dot, name, rename), meta, now, ctrl, send);
   let playIcon = null;
@@ -709,18 +726,16 @@ function receiverCard(ip) {
     const t = st.track;
     dot.className = `dot ${rx.online ? "on" : ""}`;
     name.textContent = rx.name;
-    meta.textContent = `${rx.ip}${rx.mac ? " · " + rx.mac : ""} · ${FW_NAMES[rx.firmware] || rx.firmware}`;
+    meta.textContent = receiverMeta(rx);
     now.replaceChildren(...(t
       ? [h("div", { class: "t" }, t.title), h("div", { class: "meta" }, `${t.artist} — ${t.album}`),
         h("div", { class: "meta" }, `${STATE_NAMES[st.st] || st.st} · ${fmtTime(st.pos)} / ${fmtTime(t.duration_ms)}${st.qn ? ` · track ${Number(st.qi) + 1} of ${st.qn}` : ""}`)]
-      : [h("div", { class: "meta" }, rx.firmware === "stock"
-        ? "Browsing with the original firmware. Switch to RioServer NG firmware for remote control."
-        : rx.online ? "Idle" : `Last seen ${new Date(rx.last_seen * 1000).toLocaleString()}`)]));
+      : [h("div", { class: "meta" }, receiverIdle(rx))]));
     ctrl.hidden = !rx.controllable;
     const left = rx.sleep_at ? Math.max(1, Math.round((rx.sleep_at * 1000 - Date.now()) / 60000)) : 0;
     sleepInfo.textContent = left ? `Stops in ${plural(left, "minute")}` : "";
     if (!left && document.activeElement !== sleep) sleep.value = "0";
-    send.hidden = !(rx.firmware === "ng" && rx.online);
+    send.hidden = !(canTarget(rx) && rx.online);
     const want = rxPlaying(st) ? "pause" : "play";
     if (playIcon !== want) {
       playBtn.innerHTML = ICON[want];
@@ -740,12 +755,13 @@ function renderReceiverCards() {
     receiverCards.clear();
     receiverHolder.replaceChildren(h("div", { class: "empty", style: "grid-column:1/-1" },
       h("h2", {}, "No receivers yet"),
-      h("p", {}, "Power on a Rio Receiver or Dell Digital Audio Receiver on the same network. It finds this server automatically, boots from it and shows up here.")));
+      h("p", {}, "Power on a Rio Receiver or Dell Digital Audio Receiver on the same network. It finds this server automatically, boots from it and shows up here."),
+      h("p", {}, "Chromecasts, Google Home and Nest speakers and speaker groups on the network show up here by themselves.")));
     return;
   }
   const els = Player.receivers.map((rx) => {
-    if (!receiverCards.has(rx.ip)) receiverCards.set(rx.ip, receiverCard(rx.ip));
-    const card = receiverCards.get(rx.ip);
+    if (!receiverCards.has(rx.id)) receiverCards.set(rx.id, receiverCard(rx.id));
+    const card = receiverCards.get(rx.id);
     card.update(rx);
     return card.el;
   });
@@ -760,7 +776,7 @@ async function viewReceivers() {
   renderReceiverCards();
   return [
     h("div", { class: "head-row" }, h("div", {}, h("h1", {}, "Receivers"),
-      h("div", { class: "subtle" }, "Rio Receivers and Dell Digital Audio Receivers that have contacted this server"))),
+      h("div", { class: "subtle" }, "Rio and Dell receivers that have contacted this server, and the Chromecasts and Google speakers on your network"))),
     receiverHolder,
   ];
 }

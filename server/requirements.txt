@@ -1,3 +1,4 @@
 aiohttp>=3.9,<4
 mutagen>=1.47,<2
 watchdog>=4,<7
+pychromecast>=14,<15

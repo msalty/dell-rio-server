@@ -19,6 +19,10 @@ RioServer NG runs in Docker. It provides:
   receiver and control playback from there. Commands reach the receiver
   instantly. Receivers can be given names ("Kitchen") and have a sleep timer
   that fades out and pauses.
+- **Chromecast and Google speakers.** Chromecasts, Chromecast Audio, Google
+  Home and Nest speakers, speaker groups, and speakers and TVs with
+  Chromecast built-in show up next to your receivers, and you can send music
+  to them the same way. See [Chromecast and Google speakers](#chromecast-and-google-speakers).
 - **Automatic library updates.** Music added to, changed in or removed from
   the mounted folder shows up within seconds. A periodic rescan catches
   anything the file watcher misses.
@@ -108,11 +112,13 @@ and no browser bars:
   | 111/udp+tcp | portmapper (network boot) |
   | 627/udp+tcp | NFS mountd (network boot) |
   | 2049/udp+tcp | NFS (network boot) |
-  | 12078/tcp | Rio music protocol (and the web interface) |
+  | 12078/tcp | Rio music protocol, the web interface, and the music Chromecasts fetch |
   | 8080/tcp | web interface |
+  | 5353/udp | finding Chromecasts (mDNS) |
 
   The server also sends small UDP datagrams to port 21076 on NG receivers,
-  so they act on web-interface commands at once.
+  so they act on web-interface commands at once, and connects to cast
+  devices on port 8009 (speaker groups use a port of their own).
 
   If the host already runs `rpcbind` (common when it mounts or exports NFS
   shares), set `RIO_PORTMAP_PORT` to an unused port. If the receiver can't
@@ -138,6 +144,7 @@ All settings are environment variables.
 | `RIO_RESCAN_INTERVAL` | `900` | seconds between periodic rescans (`0` = never) |
 | `RIO_WATCH` | `1` | rescan as soon as files change |
 | `RIO_WATCH_POLLING` | `0` | poll for changes instead of using inotify (needed for SMB/NFS-mounted music) |
+| `RIO_CAST` | `1` | find Chromecasts and Google speakers so music can be sent to them (`0` to disable) |
 | `RIO_CLASSIC_SHOW_COUNTS` | `0` | show "Name (12)" in the original firmware's menus |
 | `RIO_LOG_LEVEL` | `INFO` | `DEBUG` logs every request |
 
@@ -150,6 +157,28 @@ playlists. Album art comes from embedded pictures or from a
 `cover.jpg`/`folder.jpg` file in the album folder. Artist pictures come from an
 `artist.jpg` in the artist's folder (the convention Plex and Kodi use), or
 otherwise from the artist's newest album cover.
+
+## Chromecast and Google speakers
+
+The server finds cast devices on the network by itself (over mDNS, which is
+another reason the container needs host networking). They appear under
+**Receivers** and in the **Play on** menu. Pick one and play an album,
+playlist or song as you would on a receiver. Play/pause, next, previous,
+seek, volume, names and the sleep timer all work the same way.
+
+Each track plays through Google's standard media player on the device, with
+its title, artist and cover art. The device downloads the MP3 straight
+from this server on port 12078, so the server must be reachable from the
+device at the address it detects (set `RIO_SERVER_IP` if the host has
+several networks).
+
+- **Speaker groups** made in the Google Home app show up as a device of
+  their own, so music plays in sync across every speaker in the group.
+- **The server keeps the play queue.** The device is given one track at a
+  time, and when it reports that a track has finished the server starts the
+  next one. Expect a short gap between tracks.
+- **Another app wins.** If someone casts Spotify or YouTube to the device,
+  the server's queue for it ends and the card shows the app in use.
 
 ## Firmware
 

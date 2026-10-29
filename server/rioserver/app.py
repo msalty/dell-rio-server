@@ -9,6 +9,7 @@ from pathlib import Path
 
 from aiohttp import web
 
+from .cast import CastDiscovery
 from .config import Config
 from .firmware import FirmwareStore
 from .library import Library
@@ -124,6 +125,15 @@ async def run(cfg: Config) -> None:
     def discovered(ip: str, kind: str, mac: str | None) -> None:
         ctx.receivers.touch(ip, mac=mac, stage="booting" if kind == "boot" else "running")
 
+    if cfg.cast:
+        try:
+            discovery = CastDiscovery(cfg, ctx.receivers, asyncio.get_running_loop())
+            discovery.start()
+            closers.append(discovery)
+            log.info("looking for Chromecasts and Google speakers (mDNS)")
+        except Exception as exc:  # e.g. no multicast on this network
+            log.error("could not start Chromecast discovery: %s", exc)
+
     try:
         closers.append(await serve_ssdp(cfg.ssdp_port, cfg.server_ip, cfg.http_port, discovered))
         log.info("SSDP discovery listening on udp/%d", cfg.ssdp_port)
@@ -142,6 +152,7 @@ async def run(cfg: Config) -> None:
         await asyncio.Event().wait()
     finally:
         ctx.watcher.stop()
+        ctx.receivers.close()
         for c in closers:
             c.close()
         await runner.cleanup()
