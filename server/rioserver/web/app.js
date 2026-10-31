@@ -404,6 +404,7 @@ async function pollReceivers() {
   }
   if (Player.target && !Player.receivers.some((r) => r.id === Player.target)) Player.target = "";
   sel.value = Player.target;
+  showTarget();
   const online = Player.receivers.filter((r) => r.online).length;
   const pill = $("#receiver-count");
   pill.hidden = !online;
@@ -411,8 +412,19 @@ async function pollReceivers() {
   if (Player.target) { renderNowPlaying(); markPlaying(); }
   if (currentRoute === "receivers") renderReceiverCards();
 }
+// The narrow layout shows "Play on" as an icon: highlighted while music goes
+// to a receiver, with the receiver's name as its tooltip.
+function showTarget() {
+  const r = Player.receiver;
+  const name = Player.target ? (r ? r.name : "a receiver") : "this browser";
+  const wrap = $("#target-wrap");
+  wrap.classList.toggle("remote", !!Player.target);
+  wrap.title = `Play on ${name}`;
+}
+
 $("#target").addEventListener("change", (e) => {
   Player.target = e.target.value;
+  showTarget();
   localStorage.setItem("rio.target", Player.target);
   if (Player.target) audio.pause();
   else $("#volume").value = Math.round(audio.volume * 100);
@@ -723,7 +735,7 @@ function receiverCard(id) {
   const ctrl = h("div", { class: "controls" }, transport, volRow, sleepRow);
   const send = h("button", {
     class: "btn send",
-    onclick: () => { Player.target = id; localStorage.setItem("rio.target", id); $("#target").value = id; renderNowPlaying(); toast(`Playing on ${r().name}`); },
+    onclick: () => { Player.target = id; localStorage.setItem("rio.target", id); $("#target").value = id; showTarget(); renderNowPlaying(); toast(`Playing on ${r().name}`); },
   }, "Send music here");
   const el = h("div", { class: "card" }, h("h3", {}, dot, name, rename), meta, now, ctrl, send);
   let playIcon = null;

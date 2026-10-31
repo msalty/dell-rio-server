@@ -46,9 +46,13 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
           <input id="search" type="search" placeholder="Search artists, albums and songs" autocomplete="off">
         </div>
-        <label class="target">
-          <span>Play on</span>
-          <select id="target"><option value="">This browser</option></select>
+        <label class="target" id="target-wrap" title="Play on">
+          <span class="target-label">Play on</span>
+          <!-- On narrow screens the select is invisible on top of this icon, so a tap opens the system picker. -->
+          <span class="target-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M3 8V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M3 12a8 8 0 0 1 8 8M3 16a4 4 0 0 1 4 4"/><circle class="fill" cx="3.5" cy="19.5" r="1.5"/></svg>
+          </span>
+          <select id="target" aria-label="Play on"><option value="">This browser</option></select>
         </label>
       </header>
       <section class="view" id="view" tabindex="-1"></section>
