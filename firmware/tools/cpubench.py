@@ -6,6 +6,7 @@ plus a Now Playing render), runs it under the Unicorn ARM emulator and counts
 executed instructions per second of audio.
 
     python3 tools/cpubench.py            # needs ffmpeg and `pip install unicorn`
+    python3 tools/cpubench.py 320        # at another bitrate (kbps)
 
 The ARM720T in the receiver runs at 74 MHz; with cache misses and multi-cycle
 loads, stores and multiplies it manages very roughly 40 million instructions
@@ -26,7 +27,7 @@ SECONDS = 3.0
 BUDGET_MIPS = 40.0
 
 
-def make_mp3() -> bytes:
+def make_mp3(kbps: int) -> bytes:
     with tempfile.TemporaryDirectory() as d:
         out = Path(d) / "bench.mp3"
         # Pink noise plus tones: dense spectral content, close to worst case.
@@ -35,15 +36,15 @@ def make_mp3() -> bytes:
              f"anoisesrc=color=pink:duration={SECONDS}:amplitude=0.3",
              "-f", "lavfi", "-i", f"sine=frequency=440:duration={SECONDS}",
              "-filter_complex", "amix=inputs=2", "-ac", "2", "-ar", "44100",
-             "-codec:a", "libmp3lame", "-b:a", "128k", "-write_xing", "0", "-id3v2_version", "0",
+             "-codec:a", "libmp3lame", "-b:a", f"{kbps}k", "-write_xing", "0", "-id3v2_version", "0",
              str(out)],
             check=True,
         )
         return out.read_bytes()
 
 
-def build() -> Path:
-    data = make_mp3()
+def build(kbps: int) -> Path:
+    data = make_mp3(kbps)
     src = BUILD / "bench_mp3.c"
     BUILD.mkdir(exist_ok=True)
     body = ",".join(str(b) for b in data)
@@ -105,7 +106,9 @@ def run(elf: Path, mode: int) -> tuple[int, int]:
 
 
 def main() -> None:
-    elf = build()
+    kbps = int(sys.argv[1]) if len(sys.argv) > 1 else 128
+    print(f"{kbps} kbps MP3")
+    elf = build(kbps)
     audio_seconds = None
     results = {}
     for mode, label in ((0, "decode"), (2, "one Now Playing render")):

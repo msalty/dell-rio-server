@@ -16,7 +16,7 @@ extern const unsigned int bench_mp3_len;
 volatile int bench_mode = 0;
 volatile unsigned bench_frames;
 static int16_t pcm[1152 * 2];
-static uint8_t inbuf[96 * 1024 + MAD_BUFFER_GUARD];
+static uint8_t inbuf[256 * 1024 + MAD_BUFFER_GUARD]; /* 3 s of 320 kbps is 120 KB */
 
 static inline int16_t scale(mad_fixed_t s)
 {
