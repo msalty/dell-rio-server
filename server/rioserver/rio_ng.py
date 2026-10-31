@@ -16,7 +16,7 @@ tab-separated records.
       total  <n>, then one hex fid per line
   GET /ng/track/<fid>
       key/value lines: title, artist, album, track, tracks, dur, kbps, ...
-  GET /ng/poll?mac=..&st=..&id=..&pos=..&vol=..&qi=..&qn=..&wake=<port>&stall=<ms>
+  GET /ng/poll?mac=..&st=..&id=..&pos=..&vol=..&qi=..&qn=..&wake=<port>&stall=<ms>&under=<n>&underms=<ms>
       reports playback state; the reply carries queued commands from the web
       UI ("cmd <verb> [args...]") and the library version ("lib <n>"). When a
       command is queued the server sends a UDP datagram to <port> on the
@@ -317,13 +317,25 @@ class NGProtocol:
             log.warning("%s: playback was held up for %s ms; audio may have skipped", r.name, stall)
         fid = ids.parse_hex(state.get("id") or "")
         kind = ids.decode_fid(fid) if fid else None
-        if kind and kind[0] == "track":
-            t = self.lib.track(kind[1])
-            if t:
-                state["track"] = {
-                    "id": t["id"], "title": t["title"], "artist": t["artist"], "album": t["album"],
-                    "album_id": t["album_id"], "duration_ms": t["duration_ms"],
-                }
+        t = self.lib.track(kind[1]) if kind and kind[0] == "track" else None
+        if t:
+            state["track"] = {
+                "id": t["id"], "title": t["title"], "artist": t["artist"], "album": t["album"],
+                "album_id": t["album_id"], "duration_ms": t["duration_ms"],
+            }
+        under = int(q.get("under", "")) if q.get("under", "").isdigit() else 0
+        under_ms = int(q.get("underms", "")) if q.get("underms", "").isdigit() else 0
+        if under or under_ms:
+            # The stream ran dry: data didn't arrive from here fast enough.
+            # A "slow read" warning just before points at the music folder;
+            # otherwise suspect the network. A wait still going on when the
+            # receiver reported carries on into its next report.
+            playing = f' during "{t["title"]}" ({t["bitrate"]} kbps)' if t else ""
+            if under:
+                log.warning("%s: ran out of music %s%s; waited %.1f s for data", r.name,
+                            "once" if under == 1 else f"{under} times", playing, under_ms / 1000)
+            else:
+                log.warning("%s: waited another %.1f s for music data%s", r.name, under_ms / 1000, playing)
         lines = [f"lib\t{self.lib.version}"]
         while r.commands:
             cmd = r.commands.popleft()

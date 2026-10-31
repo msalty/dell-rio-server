@@ -47,6 +47,11 @@ void player_seek_ms(uint32_t ms);
 void player_set_shuffle(int on);
 void player_set_volume(int v);
 uint32_t player_position_ms(void);
+/* Times the stream ran dry mid-track since the last report, and how long
+ * playback waited for data (a wait still going on counts up to now). */
+void player_underruns(unsigned *count, uint32_t *ms);
+/* The figures above have been reported; start counting again. */
+void player_underruns_reported(void);
 
 /* Do a slice of playback work. Returns the socket the player is waiting on
  * (to include in select), -1 if none, and sets *busy when it made progress. */

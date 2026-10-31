@@ -28,6 +28,10 @@ static int fail_count;
 static uint32_t samples_out; /* at 44.1kHz since stream_base */
 static uint32_t base_ms;     /* position corresponding to stream_base */
 static int threshold;
+static int starved; /* waiting for data after running dry mid-track */
+static uint32_t starved_at;
+static unsigned underruns;   /* since the last report to the server */
+static uint32_t underrun_ms;
 
 static struct mad_stream mst;
 static struct mad_frame mfr;
@@ -62,8 +66,18 @@ static void close_stream(void)
     fd = -1;
 }
 
+/* Count the time spent waiting since the stream ran dry. */
+static void end_starve(void)
+{
+    if (starved) {
+        underrun_ms += time_ms() - starved_at;
+        starved = 0;
+    }
+}
+
 static void reset_decoder(void)
 {
+    end_starve();
     mad_synth_finish(&msy);
     mad_frame_finish(&mfr);
     mad_stream_finish(&mst);
@@ -236,12 +250,14 @@ int player_play_node(const char *node, int first, int shuffle)
 
 void player_stop(void)
 {
+    end_starve();
     close_stream();
     P.state = P_STOPPED;
 }
 
 void player_pause(void)
 {
+    end_starve(); /* a pause isn't waiting for data */
     if (P.state == P_PLAYING || P.state == P_BUFFERING)
         P.state = P_PAUSED;
 }
@@ -321,6 +337,20 @@ void player_set_volume(int v)
         v = 100;
     P.volume = v;
     audio_set_volume(v);
+}
+
+void player_underruns(unsigned *count, uint32_t *ms)
+{
+    *count = underruns;
+    *ms = underrun_ms + (starved ? time_ms() - starved_at : 0);
+}
+
+void player_underruns_reported(void)
+{
+    underruns = 0;
+    underrun_ms = 0;
+    if (starved)
+        starved_at = time_ms();
 }
 
 uint32_t player_position_ms(void)
@@ -446,9 +476,10 @@ int player_service(int *busy)
     if (P.state == P_PAUSED)
         return -1; /* don't read further; the TCP window throttles the server */
     if (P.state == P_BUFFERING) {
-        if (avail >= threshold || eof)
+        if (avail >= threshold || eof) {
             P.state = P_PLAYING;
-        else
+            end_starve();
+        } else
             return fd;
     }
     if (eof && !guard_added) {
@@ -480,6 +511,12 @@ int player_service(int *busy)
                 return fd;
             }
             /* underrun: wait for more data before resuming */
+            if (!starved) {
+                underruns++;
+                starved = 1;
+                starved_at = time_ms();
+                dlog("player: ran out of data (%d bytes buffered)\n", in_end - in_start);
+            }
             P.state = P_BUFFERING;
             threshold = REBUFFER;
             rebuffer = 1;

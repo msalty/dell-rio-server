@@ -82,7 +82,11 @@ def slow_poll_proxy(upstream: str, delay: float):
                 head += chunk
             if head.startswith(b"GET /ng/poll"):
                 time.sleep(delay)
-            with socket.create_connection((host, int(port))) as up:
+            try:
+                up = socket.create_connection((host, int(port)))
+            except OSError:
+                return  # a late poll from a test whose server has already stopped
+            with up:
                 up.sendall(head)
                 while chunk := up.recv(65536):
                     try:
@@ -198,5 +202,124 @@ def test_slow_server_does_not_interrupt_audio(tmp_path, delay):
             time.sleep(9)  # three regular polls
             log = rx.console()
             assert "audio: underrun" not in log, log
+        finally:
+            rx.stop()
+
+
+@contextlib.contextmanager
+def stalling_stream_proxy(upstream: str, rate: int, after: int, pause: float):
+    """An HTTP/1.0 proxy that sends the first music stream at `rate` bytes a
+    second, then stops it for `pause` seconds after `after` bytes, as a slow
+    NAS would, and then sends the rest at full speed. It also records the
+    status polls.
+
+    The pacing stands in for the real receiver's small TCP window: under
+    qemu the firmware uses the host's sockets, whose buffers would otherwise
+    take in the whole track at once."""
+    host, port = upstream.split(":")
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(16)
+    polls: list[str] = []
+    stalled = threading.Event()
+
+    def handle(client):
+        with client:
+            head = b""
+            while b"\r\n\r\n" not in head:
+                chunk = client.recv(4096)
+                if not chunk:
+                    return
+                head += chunk
+            line = head.split(b"\r\n", 1)[0].decode("latin-1")
+            if line.startswith("GET /ng/poll"):
+                polls.append(line)
+            stall = line.startswith("GET /content/") and not stalled.is_set()
+            if stall:
+                stalled.set()
+            sent, began = 0, time.monotonic()
+            with socket.create_connection((host, int(port))) as up:
+                up.sendall(head)
+                while chunk := up.recv(8192):
+                    if stall:
+                        if sent < after <= sent + len(chunk):
+                            time.sleep(pause)
+                            stall = False  # caught up: the network itself is fast
+                        else:
+                            ahead = (sent + len(chunk)) / rate - (time.monotonic() - began)
+                            if ahead > 0:
+                                time.sleep(ahead)
+                    sent += len(chunk)
+                    try:
+                        client.sendall(chunk)
+                    except OSError:
+                        return
+
+    def serve():
+        while True:
+            try:
+                client, _ = listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=handle, args=(client,), daemon=True).start()
+
+    threading.Thread(target=serve, daemon=True).start()
+    try:
+        yield f"127.0.0.1:{listener.getsockname()[1]}", polls
+    finally:
+        listener.close()
+
+
+def test_running_out_of_music_is_reported(tmp_path):
+    """When the stream stalls for longer than the receiver's buffer lasts,
+    the receiver tells the server it ran out, and for how long."""
+    import json
+    import re
+    import urllib.request
+
+    from simulate import Receiver
+
+    music = tmp_path / "music" / "Artist" / "Album"
+    music.mkdir(parents=True)
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "anoisesrc=color=pink:duration=20:amplitude=0.3", "-ac", "2", "-ar", "44100",
+                    "-codec:a", "libmp3lame", "-b:a", "320k", "-metadata", "title=Noise",
+                    "-metadata", "artist=Artist", "-metadata", "album=Album", str(music / "01.mp3")],
+                   check=True)
+    # 320 kbps is 40 KB/s. Sent at 45 KB/s, the receiver is about 1.5 s
+    # ahead after 5 s of it, so a 4 s stall runs it dry for a few seconds.
+    with run_server(tmp_path / "music", tmp_path / "data") as upstream, \
+            stalling_stream_proxy(upstream, rate=45 * 1024, after=225 * 1024, pause=4.0) as (proxied, polls):
+        rx = Receiver(str(FIRMWARE), proxied, workdir=str(tmp_path / "rx"))
+        try:
+            api = f"http://{upstream}/api"
+            deadline = time.time() + 10
+            while not json.load(urllib.request.urlopen(f"{api}/receivers")) and time.time() < deadline:
+                time.sleep(0.2)
+            rid = json.load(urllib.request.urlopen(f"{api}/receivers"))[0]["id"]
+            album = json.load(urllib.request.urlopen(f"{api}/albums"))[0]["id"]
+            req = urllib.request.Request(f"{api}/receivers/{rid}/play", data=json.dumps({"album_id": album}).encode(),
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req).read()
+
+            def reports():
+                return [(int(m.group(1)), int(m.group(2))) for p in polls
+                        if (m := re.search(r"under=(\d+)&underms=(\d+)", p))]
+
+            # Wait until it has run dry and the wait has ended and been reported.
+            deadline = time.time() + 25
+            while time.time() < deadline:
+                r = reports()
+                if any(n for n, _ in r) and r[-1] == (0, 0):
+                    break
+                time.sleep(0.5)
+            log = rx.console()
+            r = reports()
+            assert any(n for n, _ in r), "\n".join(polls[-5:]) + "\n" + log
+            # One run-out, counted once, and every millisecond of the wait
+            # reported once (a wait can span two reports).
+            assert sum(n for n, _ in r) == 1, f"{r}\n{log}"
+            assert 1000 <= sum(ms for _, ms in r) <= 6000, f"{r}\n{log}"
+            assert "ran out of data" in log
         finally:
             rx.stop()

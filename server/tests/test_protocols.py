@@ -183,6 +183,54 @@ async def test_api_stream_uses_standard_ranges(client, library):
     assert (await r.read())[:3] == b"ID3"
 
 
+async def test_slow_music_folder_does_not_hold_up_the_server(client, library, monkeypatch, caplog):
+    """A slow read (a NAS, a disk spinning up) used to block the event loop,
+    stalling every receiver's stream and every request until it finished."""
+    import asyncio
+    import time
+
+    from rioserver import rio_classic
+
+    class SlowFile:
+        def __init__(self, fh):
+            self.fh, self.first = fh, True
+
+        def read(self, n):
+            if self.first:
+                self.first = False
+                time.sleep(0.6)
+            return self.fh.read(n)
+
+        def close(self):
+            self.fh.close()
+
+    real_open_at = rio_classic._open_at
+    monkeypatch.setattr(rio_classic, "_open_at", lambda path, offset: SlowFile(real_open_at(path, offset)))
+    t = library.tracks()[0]
+    r = await client.get(f"/content/{ids.track_fid(t['id']):x}")  # headers go out before the first read
+    body = asyncio.create_task(r.read())
+    await asyncio.sleep(0.1)  # the stream is now waiting on its first read
+    began = time.monotonic()
+    assert (await client.get("/api/status")).status == 200
+    assert time.monotonic() - began < 0.3
+    assert not body.done()
+    assert r.status == 200 and len(await body) == rio_classic.track_size(t)
+    assert "slow read from the music folder" in caplog.text
+    assert "/".join(library.track_path(t).parts[-3:]) in caplog.text
+
+
+async def test_receiver_running_out_of_music_is_logged(client, library, caplog):
+    t = library.tracks()[0]
+    fid = f"{ids.track_fid(t['id']):x}"
+    await client.get(f"/ng/poll?mac=00:90:4b:00:00:01&st=play&id={fid}&under=0&underms=0")
+    assert "ran out of music" not in caplog.text
+    await client.get(f"/ng/poll?mac=00:90:4b:00:00:01&st=play&id={fid}&under=2&underms=1500")
+    assert f'ran out of music 2 times during "{t["title"]}" ({t["bitrate"]} kbps); waited 1.5 s' in caplog.text
+    # the rest of a wait that was still going on at the last report
+    await client.get(f"/ng/poll?mac=00:90:4b:00:00:01&st=play&id={fid}&under=0&underms=800")
+    assert "waited another 0.8 s for music data" in caplog.text
+
+
 async def test_api_art_from_folder_jpg(client, library):
     abbey = library.albums_by_title("Abbey Road")[0]
     r = await client.get(f"/api/art/album/{abbey['id']}")
