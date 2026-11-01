@@ -53,6 +53,20 @@ int audio_open(void);
 /* Queue interleaved stereo 16-bit samples at 44.1kHz. Blocks when the
  * device buffer is full, which paces the main loop. */
 void audio_play(const int16_t *pcm, int frames);
+/* Dropouts: times the audio device ran out of sound while playback was
+ * meant to be continuous, how much audio the device holds, and how long
+ * writes waited for room in it (time the CPU had to spare). */
+struct audio_stats {
+    unsigned gaps;
+    uint32_t gap_ms;
+    uint32_t buffer_ms; /* 0 until measured */
+    uint32_t blocked_ms;
+};
+void audio_stats(struct audio_stats *s);
+void audio_stats_reported(void);
+/* Playback is stopping or pausing on purpose (pause, seek, a new track, a
+ * stream that ran dry): the silence that follows isn't a dropout. */
+void audio_idle(void);
 void audio_set_volume(int percent);
 
 #endif

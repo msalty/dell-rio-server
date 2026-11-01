@@ -16,7 +16,8 @@ tab-separated records.
       total  <n>, then one hex fid per line
   GET /ng/track/<fid>
       key/value lines: title, artist, album, track, tracks, dur, kbps, ...
-  GET /ng/poll?mac=..&st=..&id=..&pos=..&vol=..&qi=..&qn=..&wake=<port>&stall=<ms>
+  GET /ng/poll?mac=..&st=..&id=..&pos=..&vol=..&qi=..&qn=..&wake=<port>&stall=<ms>&under=<n>&underms=<ms>
+                &gaps=<n>&gapms=<ms>&abuf=<ms>&cpu=<percent>&dec=<percent>&disp=<percent>&net=<percent>
       reports playback state; the reply carries queued commands from the web
       UI ("cmd <verb> [args...]") and the library version ("lib <n>"). When a
       command is queued the server sends a UDP datagram to <port> on the
@@ -46,6 +47,20 @@ QUEUE_LIMIT = 10000
 # previous poll. The audio device buffers only a fraction of a second, so a
 # longer hold-up is probably an audible skip.
 STALL_WARN_MS = 250
+# CPU use while playing (NG firmware 1.3+) that leaves too little headroom:
+# a few demanding frames in a row and the audio device runs dry. On a real
+# receiver 97-98% meant dropouts, while ~90% with the audio device kept full
+# plays cleanly. A track's first seconds run high while the device fills,
+# so it takes this many polls in a row, and it is said once per track.
+CPU_WARN_PERCENT = 95
+CPU_WARN_POLLS = 2
+
+
+def _int(q, key: str) -> int | None:
+    try:
+        return int(q.get(key, ""))
+    except ValueError:
+        return None
 
 
 class NodeError(Exception):
@@ -317,13 +332,26 @@ class NGProtocol:
             log.warning("%s: playback was held up for %s ms; audio may have skipped", r.name, stall)
         fid = ids.parse_hex(state.get("id") or "")
         kind = ids.decode_fid(fid) if fid else None
-        if kind and kind[0] == "track":
-            t = self.lib.track(kind[1])
-            if t:
-                state["track"] = {
-                    "id": t["id"], "title": t["title"], "artist": t["artist"], "album": t["album"],
-                    "album_id": t["album_id"], "duration_ms": t["duration_ms"],
-                }
+        t = self.lib.track(kind[1]) if kind and kind[0] == "track" else None
+        if t:
+            state["track"] = {
+                "id": t["id"], "title": t["title"], "artist": t["artist"], "album": t["album"],
+                "album_id": t["album_id"], "duration_ms": t["duration_ms"],
+            }
+        playing = f' during "{t["title"]}" ({t["bitrate"]} kbps)' if t else ""
+        under = max(0, _int(q, "under") or 0)
+        under_ms = max(0, _int(q, "underms") or 0)
+        if under or under_ms:
+            # The stream ran dry: data didn't arrive from here fast enough.
+            # A "slow read" warning just before points at the music folder;
+            # otherwise suspect the network. A wait still going on when the
+            # receiver reported carries on into its next report.
+            if under:
+                log.warning("%s: ran out of music %s%s; waited %.1f s for data", r.name,
+                            "once" if under == 1 else f"{under} times", playing, under_ms / 1000)
+            else:
+                log.warning("%s: waited another %.1f s for music data%s", r.name, under_ms / 1000, playing)
+        _report_audio(r, q, playing, t["id"] if t else None)
         lines = [f"lib\t{self.lib.version}"]
         while r.commands:
             cmd = r.commands.popleft()
@@ -333,6 +361,40 @@ class NGProtocol:
             lines.append("cmd\t" + "\t".join(str(x) for x in cmd))
         r.state = state
         return self._reply(lines)
+
+
+def _report_audio(r, q, playing: str, track_id: int | None) -> None:
+    """Log what NG firmware 1.3+ says about its audio output: dropouts
+    (the audio device ran out of sound while playback should have been
+    continuous, i.e. an audible skip), how much sound the device holds, and
+    how busy the CPU was while playing."""
+    abuf, cpu, stall = _int(q, "abuf"), _int(q, "cpu"), _int(q, "stall")
+    if abuf and abuf != r.audio_buffer_ms:
+        r.audio_buffer_ms = abuf
+        log.info("%s: its audio device holds %d ms of sound", r.name, abuf)
+    gaps, gap_ms = max(0, _int(q, "gaps") or 0), max(0, _int(q, "gapms") or 0)
+    # where the CPU time went (firmware 1.4+): the rest is the kernel, the
+    # audio and network drivers, and everything else
+    shares = [f"{label} {v}%" for label, key in (("decoding", "dec"), ("display", "disp"), ("network", "net"))
+              if (v := _int(q, key)) is not None and v >= 0]
+    busy = f"CPU {cpu}% busy" + (f": {', '.join(shares)}" if shares else "") if cpu is not None and cpu >= 0 else ""
+    context = []
+    if busy:
+        context.append(busy)
+    if stall:
+        context.append(f"longest hold-up {stall} ms")
+    if r.audio_buffer_ms:
+        context.append(f"audio buffer {r.audio_buffer_ms} ms")
+    context = f" ({', '.join(context)})" if context else ""
+    if gaps:
+        log.warning("%s: audio dropped out %s, %d ms in all%s%s", r.name,
+                    "once" if gaps == 1 else f"{gaps} times", gap_ms, playing, context)
+    if cpu is None or cpu < 0:
+        return  # not playing
+    r.cpu_high_polls = r.cpu_high_polls + 1 if cpu >= CPU_WARN_PERCENT else 0
+    if not gaps and r.cpu_high_polls >= CPU_WARN_POLLS and r.cpu_warned_track != track_id:
+        r.cpu_warned_track = track_id
+        log.warning("%s: %s while playing%s; little headroom left", r.name, busy, playing)
 
 
 def _clean(s) -> str:

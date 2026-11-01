@@ -40,9 +40,19 @@ void gfx_pixel(int x, int y, int v)
 
 void gfx_fill(int x, int y, int w, int h, int v)
 {
-    for (int j = y; j < y + h; j++)
-        for (int i = x; i < x + w; i++)
-            gfx_pixel(i, j, v);
+    int x0 = x > cx0 ? x : cx0, x1 = x + w < cx1 ? x + w : cx1;
+    int y0 = y > cy0 ? y : cy0, y1 = y + h < cy1 ? y + h : cy1;
+    v &= 3;
+    for (int j = y0; j < y1; j++) {
+        int i = x0, end = x1;
+        if (i < end && (i & 1))
+            put_px(i++, j, v);
+        if (i < end && (end & 1))
+            put_px(--end, j, v);
+        /* whole bytes: two pixels each */
+        if (i < end)
+            memset(&gfx_fb[(j << 6) + (i >> 1)], v | (v << 4), (size_t)((end - i) >> 1));
+    }
 }
 
 void gfx_hline(int x, int y, int w, int v) { gfx_fill(x, y, w, 1, v); }
@@ -71,29 +81,41 @@ int gfx_text_width(const struct font *f, const char *s)
     return w;
 }
 
+/* Text is the bulk of drawing a screen, and a scrolling title redraws ~8
+ * times a second while MP3 decoding needs the CPU, so this loop is kept
+ * tight: clipping is worked out once per glyph, the shade of each coverage
+ * level once (the CPU has no divide instruction), and empty bytes of the
+ * bitmap (4 pixels each) are skipped whole. */
 static void draw_glyph(const struct font *f, const struct glyph *g, int x, int y, int shade, int ink)
 {
     int stride = (g->width + 3) / 4;
-    const uint8_t *p = f->data + g->offset;
-    for (int row = 0; row < f->height; row++, p += stride) {
+    int r0 = cy0 > y ? cy0 - y : 0;
+    int r1 = cy1 - y < f->height ? cy1 - y : f->height;
+    int c0 = cx0 > x ? cx0 - x : 0;
+    int c1 = cx1 - x < g->width ? cx1 - x : g->width;
+    if (r0 >= r1 || c0 >= c1)
+        return;
+    int level[4]; /* glyph coverage 0-3 -> pixel value */
+    for (int v = 0; v < 4; v++)
+        level[v] = (v * shade + 2) / 3;
+    const uint8_t *p = f->data + g->offset + r0 * stride;
+    for (int row = r0; row < r1; row++, p += stride) {
         int py = y + row;
-        if (py < cy0 || py >= cy1)
-            continue;
-        for (int col = 0; col < g->width; col++) {
-            int px = x + col;
-            if (px < cx0 || px >= cx1)
+        for (int col = c0; col < c1; col++) {
+            int bits = p[col >> 2];
+            if (!bits) {
+                col |= 3; /* the rest of this byte is empty too */
                 continue;
-            int v = (p[col >> 2] >> ((col & 3) * 2)) & 3;
+            }
+            int v = (bits >> ((col & 3) * 2)) & 3;
             if (!v)
                 continue;
+            int px = x + col;
             if (ink == INK_ERASE) {
-                int cur = get_px(px, py);
-                int nv = cur - v;
+                int nv = get_px(px, py) - v;
                 put_px(px, py, nv < 0 ? 0 : nv);
-            } else {
-                int nv = (v * shade + 2) / 3;
-                if (nv > get_px(px, py))
-                    put_px(px, py, nv);
+            } else if (level[v] > get_px(px, py)) {
+                put_px(px, py, level[v]);
             }
         }
     }

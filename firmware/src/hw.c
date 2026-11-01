@@ -18,6 +18,22 @@ static uint8_t audio_buf[AUDIO_BLOCK];
 static int audio_fill;
 static uint32_t sim_audio_start;
 static uint32_t sim_audio_frames;
+
+/* Dropout detection. A write returns at once while the device has room and
+ * blocks while it is full, so a blocked write means the device is full; from
+ * there on each block written adds 26 ms of sound, and real time uses it up.
+ * If a write arrives after the sound has run out, there was a gap. */
+#define BLOCK_US 26122       /* AUDIO_BLOCK bytes: 1152 stereo frames at 44.1 kHz */
+#define BLOCKED_MS 8         /* a write that took this long waited for room */
+#define GAP_SLACK_MS 20      /* clock jitter */
+static int tracking;         /* 0 after audio_idle(): the next write starts afresh */
+static uint32_t dry_at;      /* when the device will have played everything written */
+static uint32_t dry_us;      /* sub-millisecond part of dry_at */
+static int measuring;        /* filling an empty device: measuring how much it holds */
+static uint32_t fill_start;
+static unsigned fill_blocks;
+static uint32_t buffer_ms;   /* how much sound the device holds (0 = not measured) */
+static struct audio_stats stats;
 static uint32_t power_pressed_at;
 
 int hw_simulated(void) { return sim; }
@@ -135,8 +151,73 @@ int audio_open(void)
     return audio_fd;
 }
 
+static void add_block(uint32_t from)
+{
+    dry_us += BLOCK_US;
+    dry_at = from + dry_us / 1000;
+    dry_us %= 1000;
+}
+
+static void track_block(uint32_t before, uint32_t now)
+{
+    uint32_t took = now - before;
+    stats.blocked_ms += took;
+    if (!tracking) {
+        /* the device is empty: measure how much it holds while it fills */
+        tracking = measuring = 1;
+        fill_start = before;
+        fill_blocks = 1;
+        dry_us = 0;
+        add_block(now);
+        return;
+    }
+    if (took >= BLOCKED_MS) {
+        /* full: it holds what was written less what has played since */
+        if (measuring) {
+            int32_t held = (int32_t)((uint64_t)fill_blocks * BLOCK_US / 1000) - (int32_t)(before - fill_start);
+            if (held > 0)
+                buffer_ms = (uint32_t)held;
+            measuring = 0;
+        }
+        if (buffer_ms) {
+            dry_at = now + buffer_ms;
+            dry_us = 0;
+            return;
+        }
+    }
+    if (measuring)
+        fill_blocks++;
+    int32_t late = (int32_t)(before - dry_at);
+    if (late > GAP_SLACK_MS) {
+        stats.gaps++;
+        stats.gap_ms += (uint32_t)late;
+        dlog("audio: dropout %d ms\n", (int)late);
+        dry_us = 0;
+        add_block(now);
+        return;
+    }
+    add_block((int32_t)(now - dry_at) > 0 ? now : dry_at);
+}
+
+void audio_idle(void)
+{
+    tracking = measuring = 0;
+}
+
+void audio_stats(struct audio_stats *s)
+{
+    *s = stats;
+    s->buffer_ms = buffer_ms;
+}
+
+void audio_stats_reported(void)
+{
+    memset(&stats, 0, sizeof(stats));
+}
+
 static void audio_flush_block(void)
 {
+    uint32_t before = time_ms();
     if (audio_fd >= 0)
         sys_write(audio_fd, audio_buf, AUDIO_BLOCK);
     if (sim) {
@@ -160,6 +241,7 @@ static void audio_flush_block(void)
         if ((int32_t)(due - now) > 300)
             sys_nanosleep((long)(due - now) - 300);
     }
+    track_block(before, time_ms());
     audio_fill = 0;
 }
 

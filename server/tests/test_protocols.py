@@ -183,6 +183,87 @@ async def test_api_stream_uses_standard_ranges(client, library):
     assert (await r.read())[:3] == b"ID3"
 
 
+async def test_slow_music_folder_does_not_hold_up_the_server(client, library, monkeypatch, caplog):
+    """A slow read (a NAS, a disk spinning up) used to block the event loop,
+    stalling every receiver's stream and every request until it finished."""
+    import asyncio
+    import time
+
+    from rioserver import rio_classic
+
+    class SlowFile:
+        def __init__(self, fh):
+            self.fh, self.first = fh, True
+
+        def read(self, n):
+            if self.first:
+                self.first = False
+                time.sleep(0.6)
+            return self.fh.read(n)
+
+        def close(self):
+            self.fh.close()
+
+    real_open_at = rio_classic._open_at
+    monkeypatch.setattr(rio_classic, "_open_at", lambda path, offset: SlowFile(real_open_at(path, offset)))
+    t = library.tracks()[0]
+    r = await client.get(f"/content/{ids.track_fid(t['id']):x}")  # headers go out before the first read
+    body = asyncio.create_task(r.read())
+    await asyncio.sleep(0.1)  # the stream is now waiting on its first read
+    began = time.monotonic()
+    assert (await client.get("/api/status")).status == 200
+    assert time.monotonic() - began < 0.3
+    assert not body.done()
+    assert r.status == 200 and len(await body) == rio_classic.track_size(t)
+    assert "slow read from the music folder" in caplog.text
+    assert "/".join(library.track_path(t).parts[-3:]) in caplog.text
+
+
+async def test_receiver_running_out_of_music_is_logged(client, library, caplog):
+    t = library.tracks()[0]
+    fid = f"{ids.track_fid(t['id']):x}"
+    await client.get(f"/ng/poll?mac=00:90:4b:00:00:01&st=play&id={fid}&under=0&underms=0")
+    assert "ran out of music" not in caplog.text
+    await client.get(f"/ng/poll?mac=00:90:4b:00:00:01&st=play&id={fid}&under=2&underms=1500")
+    assert f'ran out of music 2 times during "{t["title"]}" ({t["bitrate"]} kbps); waited 1.5 s' in caplog.text
+    # the rest of a wait that was still going on at the last report
+    await client.get(f"/ng/poll?mac=00:90:4b:00:00:01&st=play&id={fid}&under=0&underms=800")
+    assert "waited another 0.8 s for music data" in caplog.text
+
+
+async def test_audio_dropouts_buffer_and_cpu_are_logged(client, library, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="rioserver.rio_ng")
+    t = library.tracks()[0]
+    base = f"/ng/poll?mac=00:90:4b:00:00:01&st=play&id={ids.track_fid(t['id']):x}"
+    await client.get(base + "&gaps=0&gapms=0&abuf=310&cpu=40&stall=30")
+    assert "its audio device holds 310 ms of sound" in caplog.text
+    assert "dropped out" not in caplog.text and "headroom" not in caplog.text
+    caplog.clear()
+    await client.get(base + "&gaps=2&gapms=180&abuf=310&cpu=87&stall=140")
+    assert "holds" not in caplog.text  # said once, until it changes
+    assert (f'audio dropped out 2 times, 180 ms in all during "{t["title"]}" ({t["bitrate"]} kbps) '
+            "(CPU 87% busy, longest hold-up 140 ms, audio buffer 310 ms)") in caplog.text
+    caplog.clear()
+    # ~90% with the device kept full is healthy; 95% and up, sustained, isn't
+    await client.get(base + "&gaps=0&gapms=0&abuf=310&cpu=91")
+    await client.get(base + "&gaps=0&gapms=0&abuf=310&cpu=96")  # e.g. a track's first seconds
+    assert caplog.text == ""
+    await client.get(base + "&gaps=0&gapms=0&abuf=310&cpu=95")
+    assert "CPU 95% busy while playing" in caplog.text
+    caplog.clear()
+    await client.get(base + "&gaps=0&gapms=0&abuf=310&cpu=97")
+    assert caplog.text == ""  # once per track
+    caplog.clear()
+    await client.get(base + "&gaps=1&gapms=30&abuf=0&cpu=97&dec=81&disp=7&net=1&stall=50")
+    assert "(CPU 97% busy: decoding 81%, display 7%, network 1%, longest hold-up 50 ms, audio buffer 310 ms)" \
+        in caplog.text
+    caplog.clear()
+    await client.get(base + "&gaps=0&gapms=0&abuf=0&cpu=-1")  # not playing, nothing measured
+    assert caplog.text == ""
+
+
 async def test_api_art_from_folder_jpg(client, library):
     abbey = library.albums_by_title("Abbey Road")[0]
     r = await client.get(f"/api/art/album/{abbey['id']}")
@@ -309,6 +390,24 @@ async def test_booted_receiver_polling_through_a_proxy_is_one_receiver(client):
     # a different unit given the old address gets its own card
     reg.touch("192.168.1.41", mac="00:90:4b:00:00:02", stage="booting")
     assert sorted(r.mac for r in reg.all()) == ["00:90:4b:00:00:01", "00:90:4b:00:00:02"]
+
+
+async def test_receivers_are_addressed_by_mac(client):
+    reg = client.ctx.receivers
+    reg.touch("192.168.1.40", mac="00:90:4B:00:00:01", firmware="ng", stage="running")
+    rx = (await (await client.get("/api/receivers")).json())[0]
+    assert rx["id"] == "00:90:4b:00:00:01" and rx["ip"] == "192.168.1.40"
+    # the router hands it a new address; the id the web interface saved still works
+    reg.touch("192.168.1.41", mac="00:90:4b:00:00:01")
+    r = await client.post("/api/receivers/00:90:4b:00:00:01/command", json={"cmd": "next"})
+    assert r.status == 200
+    # so does its current address, for anything that still uses one
+    r = await client.post("/api/receivers/192.168.1.41/command", json={"cmd": "toggle"})
+    assert r.status == 200
+    rows = ng_lines(await (await client.get("/ng/poll?mac=00:90:4b:00:00:01&st=play")).text())
+    assert [r[1:] for r in rows if r[0] == "cmd"] == [["next"], ["toggle"]]
+    # until it reports a MAC, a receiver is known by its address
+    assert reg.touch("192.168.1.50").id == "192.168.1.50"
 
 
 async def test_sleep_timer_fades_out_and_restores_volume(client, monkeypatch):

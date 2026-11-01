@@ -74,6 +74,13 @@ uint32_t time_ms(void)
     return (uint32_t)tv.tv_sec * 1000u + (uint32_t)(tv.tv_usec / 1000);
 }
 
+uint32_t time_us(void)
+{
+    struct timeval tv;
+    SYSCALL3(NR_gettimeofday, &tv, 0, 0);
+    return (uint32_t)tv.tv_sec * 1000000u + (uint32_t)tv.tv_usec;
+}
+
 long time_sec(void)
 {
     struct timeval tv;

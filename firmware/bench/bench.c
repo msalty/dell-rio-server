@@ -4,7 +4,9 @@
  *
  * `bench_mode` (patched in by the harness) selects what runs per MP3 frame:
  *   0  decode + synthesise + convert to 16-bit PCM (what playback must do)
+ *   1  the same, keeping the PCM in bench_pcm for the harness to check
  *   2  render the Now Playing screen once (UI cost, measured separately)
+ *   3  one step of its scrolling title: redraw just the title line
  */
 #include "gfx.h"
 #include "mad.h"
@@ -16,7 +18,9 @@ extern const unsigned int bench_mp3_len;
 volatile int bench_mode = 0;
 volatile unsigned bench_frames;
 static int16_t pcm[1152 * 2];
-static uint8_t inbuf[96 * 1024 + MAD_BUFFER_GUARD];
+#define PCM_KEEP_FRAMES 140 /* 3.6 s */
+int16_t bench_pcm[PCM_KEEP_FRAMES * 1152 * 2];
+static uint8_t inbuf[256 * 1024 + MAD_BUFFER_GUARD]; /* 3 s of 320 kbps is 120 KB */
 
 static inline int16_t scale(mad_fixed_t s)
 {
@@ -45,6 +49,15 @@ static void render(void)
     gfx_fill(31, 58, 30, 3, 3);
 }
 
+/* as render_title_step() in src/ui.c */
+static void title_step(void)
+{
+    gfx_fill(0, 12, GFX_W, 17, 0);
+    gfx_clip(2, 12, GFX_W - 2, 29);
+    gfx_text(&font_large, -20, 12, "Maxwell's Silver Hammer", 3, INK_NORMAL);
+    gfx_noclip();
+}
+
 int main(int argc, char **argv)
 {
     (void)argc;
@@ -53,9 +66,21 @@ int main(int argc, char **argv)
         render();
         return 0;
     }
+    if (bench_mode == 3) {
+        title_step();
+        return 0;
+    }
     struct mad_stream st;
     struct mad_frame fr;
     struct mad_synth sy;
+#ifdef MAD_ROCKBOX
+    static unsigned char main_data[MAD_BUFFER_MDLEN];
+    static mad_fixed_t overlap[2][32][18];
+    static mad_fixed_t sbsample[2][36][32];
+    st.main_data = &main_data;
+    fr.overlap = &overlap;
+    fr.sbsample = fr.sbsample_prev = &sbsample;
+#endif
     mad_stream_init(&st);
     mad_frame_init(&fr);
     mad_synth_init(&sy);
@@ -71,9 +96,12 @@ int main(int argc, char **argv)
             break;
         }
         mad_synth_frame(&sy, &fr);
+        int16_t *out = pcm;
+        if (bench_mode == 1 && bench_frames < PCM_KEEP_FRAMES)
+            out = bench_pcm + bench_frames * 1152 * 2;
         for (int i = 0; i < sy.pcm.length; i++) {
-            pcm[2 * i] = scale(sy.pcm.samples[0][i]);
-            pcm[2 * i + 1] = scale(sy.pcm.samples[sy.pcm.channels > 1][i]);
+            out[2 * i] = scale(sy.pcm.samples[0][i]);
+            out[2 * i + 1] = scale(sy.pcm.samples[sy.pcm.channels > 1][i]);
         }
         bench_frames++;
     }

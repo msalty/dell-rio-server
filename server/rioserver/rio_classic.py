@@ -23,8 +23,11 @@ server, results are returned in album/track order rather than by title.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import struct
+import time
+from pathlib import Path
 
 from aiohttp import web
 
@@ -35,6 +38,9 @@ from .library import compile_prefix
 log = logging.getLogger(__name__)
 
 SERVER_HEADER = "Mercury-Content-Server/0.11"
+# A read from the music folder that takes this long (seconds) is logged: at
+# 320 kbps a receiver holds only about 2.4 s of audio.
+SLOW_READ = 0.25
 RESULT_LIMIT = 10000
 
 # Binary tag keys (see JReceiver RioHostTags)
@@ -396,19 +402,45 @@ async def send_audio(req: web.Request, path, data_offset: int, size: int,
     await resp.prepare(req)
     if req.method == "HEAD":
         return resp
+    # File access runs off the event loop: a read from a NAS, or from a disk
+    # that has spun down, can take seconds, and on the loop it would hold up
+    # every receiver's stream and every request at once.
+    loop = asyncio.get_running_loop()
+    fh = None
     try:
-        with open(path, "rb") as fh:
-            fh.seek(data_offset + start)
-            remaining = length
-            while remaining > 0:
-                chunk = fh.read(min(65536, remaining))
-                if not chunk:
-                    break
-                await resp.write(chunk)
-                remaining -= len(chunk)
+        began = time.monotonic()
+        fh = await loop.run_in_executor(None, _open_at, path, data_offset + start)
+        _note_slow_read(path, began)
+        remaining = length
+        while remaining > 0:
+            began = time.monotonic()
+            chunk = await loop.run_in_executor(None, fh.read, min(65536, remaining))
+            _note_slow_read(path, began)
+            if not chunk:
+                break
+            await resp.write(chunk)
+            remaining -= len(chunk)
     except (ConnectionResetError, OSError) as exc:
         log.debug("audio stream to %s ended: %s", req.remote, exc)
+    finally:
+        if fh is not None:
+            # A read may still be running if the client went away mid-read;
+            # closing waits for it, so that waits off the loop too.
+            loop.run_in_executor(None, fh.close)
     return resp
+
+
+def _open_at(path, offset: int):
+    fh = open(path, "rb")
+    fh.seek(offset)
+    return fh
+
+
+def _note_slow_read(path, began: float) -> None:
+    took = time.monotonic() - began
+    if took >= SLOW_READ:
+        p = Path(path)
+        log.warning("slow read from the music folder: %.1f s for %s", took, "/".join(p.parts[-3:]))
 
 
 # Display layouts for the stock player (decoded by David Schuetz, from JReceiver).

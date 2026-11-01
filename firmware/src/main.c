@@ -98,11 +98,18 @@ int main(int argc, char **argv)
      * second. Reported to the server with each poll. */
     uint32_t loop_at = time_ms(), stall = 0;
     int was_playing = 0;
+    /* Time spent playing since the last poll, and the part of it spent
+     * waiting for something to do: with the time audio writes waited for
+     * room, what's left is how busy the CPU was. */
+    uint32_t play_ms = 0, wait_ms = 0;
 
     for (;;) {
         uint32_t t = time_ms();
-        if (was_playing && P.state == P_PLAYING && t - loop_at > stall)
-            stall = t - loop_at;
+        if (was_playing && P.state == P_PLAYING) {
+            if (t - loop_at > stall)
+                stall = t - loop_at;
+            play_ms += t - loop_at;
+        }
         loop_at = t;
         was_playing = P.state == P_PLAYING;
 
@@ -110,7 +117,10 @@ int main(int argc, char **argv)
         int pfd = player_service(&busy);
         int poll_write = 0;
         int qfd = polling ? ui_poll_fd(&poll_write) : -1;
+        uint32_t waited_from = time_ms();
         int ev = wait_input(pfd, wake_fd, qfd, poll_write, busy ? 0 : 40);
+        if (P.state == P_PLAYING)
+            wait_ms += time_ms() - waited_from;
         if (ev & WAIT_KEY) {
             int key;
             while ((key = input_read()) != KEY_NONE)
@@ -132,10 +142,10 @@ int main(int argc, char **argv)
                 poll_again = 0;
             }
         } else if (!polling && (int32_t)(now - next_poll) >= 0) {
-            if (ui_poll_start(POLL_TIMEOUT, stall) == 0) {
+            if (ui_poll_start(POLL_TIMEOUT, stall, play_ms, wait_ms) == 0) {
                 polling = 1;
                 poll_started = now;
-                stall = 0;
+                stall = play_ms = wait_ms = 0;
             } else {
                 last_poll = now;
                 next_poll = now + POLL_INTERVAL;
