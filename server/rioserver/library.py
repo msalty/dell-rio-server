@@ -89,7 +89,27 @@ CREATE TABLE IF NOT EXISTS playlist_items (
     track_id INTEGER NOT NULL,
     PRIMARY KEY (playlist_id, pos)
 );
+CREATE TABLE IF NOT EXISTS plays (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id INTEGER NOT NULL,
+    played_at REAL NOT NULL,
+    device TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS plays_track ON plays(track_id);
+CREATE INDEX IF NOT EXISTS plays_time ON plays(played_at);
 """
+
+# Columns added after the first release; existing databases get them on start.
+MIGRATIONS = (
+    # Podcast episodes are tracks too (so every player can stream them), but
+    # they live outside the music folder and stay out of the music menus.
+    ("tracks", "podcast_id", "INTEGER"),
+)
+# Playlists made in the web interface share the playlists table with .m3u
+# files (so receivers and the original firmware see them as well); their
+# "path" is this prefix plus a random id instead of a file.
+USER_PLAYLIST_PREFIX = "user:"
+MUSIC = "t.podcast_id IS NULL"
 
 _ARTICLES = ("the ", "a ", "an ")
 
@@ -231,7 +251,7 @@ TRACK_COLUMNS = (
     "t.id, t.path, t.size, t.data_offset, t.title, t.artist, t.artist_id, "
     "ar.name AS album_artist, t.album_id, al.title AS album, al.year AS album_year, "
     "t.genre_id, g.name AS genre, t.year, t.track_no, t.track_total, t.disc_no, "
-    "t.duration_ms, t.bitrate, t.sample_rate, t.channels, t.vbr, t.added"
+    "t.duration_ms, t.bitrate, t.sample_rate, t.channels, t.vbr, t.added, t.podcast_id, t.title_sort"
 )
 TRACK_JOIN = (
     "FROM tracks t JOIN artists ar ON ar.id = t.artist_id "
@@ -255,8 +275,14 @@ class Library:
         self.scanning = False
         self.last_scan: ScanResult | None = None
         self.last_scan_time: float | None = None
+        self._bumps = 0  # changes made from the web interface (playlists, podcasts)
         with self._conn() as c:
             c.executescript(SCHEMA)
+            for table, column, decl in MIGRATIONS:
+                have = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+                if column not in have:
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            c.execute("CREATE INDEX IF NOT EXISTS tracks_podcast ON tracks(podcast_id)")
         self.version = self._compute_version()
 
     # -- infrastructure -------------------------------------------------
@@ -278,7 +304,13 @@ class Library:
 
     def _compute_version(self) -> int:
         row = self._q1("SELECT COUNT(*) AS n, COALESCE(MAX(id),0) AS m, COALESCE(SUM(mtime),0) AS s FROM tracks")
-        return hash((row["n"], row["m"], round(row["s"], 3))) & 0x7FFFFFFF
+        return hash((row["n"], row["m"], round(row["s"], 3), self._bumps)) & 0x7FFFFFFF
+
+    def bump(self) -> None:
+        """Something receivers show in their menus changed outside a scan
+        (a playlist was edited, an episode downloaded): they refetch."""
+        self._bumps += 1
+        self.version = self._compute_version()
 
     def add_listener(self, fn: Callable[[ScanResult], None]) -> None:
         self._listeners.append(fn)
@@ -303,7 +335,8 @@ class Library:
             (artist_id, title, sort, year),
         ).lastrowid
 
-    def _store_track(self, c: sqlite3.Connection, rel: str, st: os.stat_result, md: dict, existing_id):
+    def _store_track(self, c: sqlite3.Connection, rel: str, st: os.stat_result, md: dict, existing_id,
+                     podcast_id: int | None = None) -> int:
         artist_id = self._get_id(
             c, "artists", md["album_artist"], sort_key(md["album_artist_sort"] or md["album_artist"])
         )
@@ -322,13 +355,14 @@ class Library:
             "year, track_no, track_total, disc_no, duration_ms, bitrate, sample_rate, channels, vbr"
         )
         if existing_id is None:
-            c.execute(
-                f"INSERT INTO tracks(path, added, {cols}) VALUES (?, ?, {', '.join('?' * len(values))})",
-                (rel, time.time(), *values),
-            )
-        else:
-            sets = ", ".join(f"{col.strip()} = ?" for col in cols.split(","))
-            c.execute(f"UPDATE tracks SET {sets} WHERE id = ?", (*values, existing_id))
+            return c.execute(
+                f"INSERT INTO tracks(path, added, podcast_id, {cols}) "
+                f"VALUES (?, ?, ?, {', '.join('?' * len(values))})",
+                (rel, time.time(), podcast_id, *values),
+            ).lastrowid
+        sets = ", ".join(f"{col.strip()} = ?" for col in cols.split(","))
+        c.execute(f"UPDATE tracks SET {sets} WHERE id = ?", (*values, existing_id))
+        return existing_id
 
     def scan(self, full: bool = False) -> ScanResult:
         """Walk the music directory and bring the database up to date.
@@ -345,14 +379,24 @@ class Library:
             c = self._conn()
             known = {
                 r["path"]: (r["id"], r["mtime"], r["size"])
-                for r in self._q("SELECT id, path, mtime, size FROM tracks")
+                for r in self._q("SELECT id, path, mtime, size FROM tracks WHERE podcast_id IS NULL")
             }
             seen: set[str] = set()
             playlist_files: list[tuple[Path, str, float]] = []
             if not self.music_dir.is_dir():
                 log.error("music directory %s does not exist; is the volume mounted?", self.music_dir)
                 return res
-            pending = 0
+            # Tags are read first and written in batches, so the database is
+            # only locked for writing briefly (the web interface and the play
+            # history write to it while a scan runs).
+            batch: list[tuple] = []
+
+            def flush() -> None:
+                for item in batch:
+                    self._store_track(c, *item)
+                c.commit()
+                batch.clear()
+
             for root, dirs, files in os.walk(self.music_dir, followlinks=True):
                 dirs[:] = sorted(d for d in dirs if not d.startswith("."))
                 for name in sorted(files):
@@ -382,15 +426,14 @@ class Library:
                     if md is None:
                         res.errors += 1
                         continue
-                    self._store_track(c, rel, st, md, prev[0] if prev else None)
+                    batch.append((rel, st, md, prev[0] if prev else None))
                     if prev:
                         res.updated += 1
                     else:
                         res.added += 1
-                    pending += 1
-                    if pending >= 200:
-                        c.commit()
-                        pending = 0
+                    if len(batch) >= 200:
+                        flush()
+            flush()
             missing = [v[0] for k, v in known.items() if k not in seen]
             if missing and not seen:
                 log.error(
@@ -426,8 +469,9 @@ class Library:
         return res
 
     def _scan_playlists(self, c: sqlite3.Connection, files: list[tuple[Path, str, float]]) -> int:
-        by_path = {r["path"]: r["id"] for r in self._q("SELECT id, path FROM tracks")}
-        existing = {r["path"]: (r["id"], r["mtime"]) for r in self._q("SELECT id, path, mtime FROM playlists")}
+        by_path = {r["path"]: r["id"] for r in self._q("SELECT id, path FROM tracks WHERE podcast_id IS NULL")}
+        existing = {r["path"]: (r["id"], r["mtime"]) for r in self._q(
+            "SELECT id, path, mtime FROM playlists WHERE path NOT LIKE ?", (USER_PLAYLIST_PREFIX + "%",))}
         changed = 0
         keep = set()
         for full_path, rel, mtime in files:
@@ -488,14 +532,14 @@ class Library:
         )
 
     # -- queries --------------------------------------------------------
+    # Music listings leave podcast episodes out (MUSIC); lookups by id
+    # (track, tracks_by_ids) find both, since any player may be playing one.
     def stats(self) -> dict:
         row = self._q1(
             "SELECT COUNT(*) AS tracks, COALESCE(SUM(duration_ms),0) AS duration_ms, "
-            "COALESCE(SUM(size),0) AS bytes FROM tracks"
+            f"COALESCE(SUM(size),0) AS bytes, COUNT(DISTINCT artist_id) AS artists, "
+            f"COUNT(DISTINCT album_id) AS albums, COUNT(DISTINCT genre_id) AS genres FROM tracks t WHERE {MUSIC}"
         )
-        row["artists"] = self._q1("SELECT COUNT(*) AS n FROM artists")["n"]
-        row["albums"] = self._q1("SELECT COUNT(*) AS n FROM albums")["n"]
-        row["genres"] = self._q1("SELECT COUNT(*) AS n FROM genres")["n"]
         row["playlists"] = self._q1("SELECT COUNT(*) AS n FROM playlists")["n"]
         return row
 
@@ -503,7 +547,7 @@ class Library:
         rows = self._q(
             "SELECT ar.id, ar.name, ar.sort, COUNT(DISTINCT t.album_id) AS album_count, "
             "COUNT(t.id) AS track_count FROM artists ar JOIN tracks t ON t.artist_id = ar.id "
-            "GROUP BY ar.id ORDER BY ar.sort"
+            f"WHERE {MUSIC} GROUP BY ar.id ORDER BY ar.sort"
         )
         return _filter(rows, "name", prefix_regex)
 
@@ -515,7 +559,7 @@ class Library:
 
     def albums(self, artist_id: int | None = None, genre_id: int | None = None,
                prefix_regex: str | None = None) -> list[dict]:
-        where, args = [], []
+        where, args = [MUSIC], []
         if artist_id is not None:
             where.append("al.artist_id = ?")
             args.append(artist_id)
@@ -524,11 +568,11 @@ class Library:
             args.append(genre_id)
         order = "COALESCE(al.year, 9999), al.sort" if artist_id is not None else "al.sort, ar.sort"
         rows = self._q(
-            "SELECT al.id, al.title, al.year, al.artist_id, ar.name AS artist, "
-            "COUNT(t.id) AS track_count, SUM(t.duration_ms) AS duration_ms, MIN(t.id) AS first_track "
+            "SELECT al.id, al.title, al.year, al.artist_id, ar.name AS artist, ar.sort AS artist_sort, "
+            "COUNT(t.id) AS track_count, SUM(t.duration_ms) AS duration_ms, MIN(t.id) AS first_track, "
+            "MAX(t.added) AS added "
             "FROM albums al JOIN artists ar ON ar.id = al.artist_id JOIN tracks t ON t.album_id = al.id "
-            + ("WHERE " + " AND ".join(where) if where else "")
-            + f" GROUP BY al.id ORDER BY {order}",
+            "WHERE " + " AND ".join(where) + f" GROUP BY al.id ORDER BY {order}",
             args,
         )
         return _filter(rows, "title", prefix_regex)
@@ -546,7 +590,7 @@ class Library:
     def genres(self, prefix_regex: str | None = None) -> list[dict]:
         rows = self._q(
             "SELECT g.id, g.name, COUNT(t.id) AS track_count FROM genres g "
-            "JOIN tracks t ON t.genre_id = g.id GROUP BY g.id ORDER BY g.sort"
+            f"JOIN tracks t ON t.genre_id = g.id WHERE {MUSIC} GROUP BY g.id ORDER BY g.sort"
         )
         return _filter(rows, "name", prefix_regex)
 
@@ -559,7 +603,7 @@ class Library:
     def genre_artists(self, genre_id: int) -> list[dict]:
         return self._q(
             "SELECT ar.id, ar.name, COUNT(DISTINCT t.album_id) AS album_count, COUNT(t.id) AS track_count "
-            "FROM tracks t JOIN artists ar ON ar.id = t.artist_id WHERE t.genre_id = ? "
+            f"FROM tracks t JOIN artists ar ON ar.id = t.artist_id WHERE t.genre_id = ? AND {MUSIC} "
             "GROUP BY ar.id ORDER BY ar.sort",
             (genre_id,),
         )
@@ -569,8 +613,11 @@ class Library:
                ids: list[int] | None = None) -> list[dict]:
         where, args = [], []
         if album_id is not None:
+            # an album's tracks, whatever they are (a podcast is one album)
             where.append("t.album_id = ?")
             args.append(album_id)
+        else:
+            where.append(MUSIC)
         if artist_id is not None:
             where.append("t.artist_id = ?")
             args.append(artist_id)
@@ -583,9 +630,7 @@ class Library:
             order = "ar.sort, " + ARTIST_TRACK_ORDER
         else:
             order = "t.title_sort"
-        sql = f"SELECT {TRACK_COLUMNS} {TRACK_JOIN} " + (
-            "WHERE " + " AND ".join(where) if where else ""
-        ) + f" ORDER BY {order}"
+        sql = f"SELECT {TRACK_COLUMNS} {TRACK_JOIN} WHERE " + " AND ".join(where) + f" ORDER BY {order}"
         rows = self._q(sql, args)
         if ids is not None:
             pos = {tid: i for i, tid in enumerate(ids)}
@@ -596,59 +641,188 @@ class Library:
         if not ids:
             return []
         out: dict[int, dict] = {}
-        for i in range(0, len(ids), 500):
-            chunk = ids[i:i + 500]
+        unique = list(dict.fromkeys(ids))
+        for i in range(0, len(unique), 500):
+            chunk = unique[i:i + 500]
             marks = ",".join("?" * len(chunk))
             for r in self._q(f"SELECT {TRACK_COLUMNS} {TRACK_JOIN} WHERE t.id IN ({marks})", chunk):
                 out[r["id"]] = r
-        return [out[i] for i in ids if i in out]
+        # A track listed twice gets two dicts, so callers may change one.
+        return [dict(out[i]) for i in ids if i in out]
 
     def track(self, track_id: int) -> dict | None:
         return self._q1(f"SELECT {TRACK_COLUMNS} {TRACK_JOIN} WHERE t.id = ?", (track_id,))
 
     def track_path(self, track: dict) -> Path:
+        # Podcast episodes are stored with an absolute path in the data folder.
         return self.music_dir / track["path"]
 
+    # -- playlists ------------------------------------------------------
     def playlists(self) -> list[dict]:
         return self._q(
-            "SELECT p.id, p.name, COUNT(i.track_id) AS track_count FROM playlists p "
-            "LEFT JOIN playlist_items i ON i.playlist_id = p.id GROUP BY p.id ORDER BY p.name COLLATE NOCASE"
+            "SELECT p.id, p.name, COUNT(i.track_id) AS track_count, "
+            "(p.path LIKE ?) AS editable FROM playlists p "
+            "LEFT JOIN playlist_items i ON i.playlist_id = p.id GROUP BY p.id ORDER BY p.name COLLATE NOCASE",
+            (USER_PLAYLIST_PREFIX + "%",),
         )
 
     def playlist(self, playlist_id: int) -> dict | None:
-        return self._q1("SELECT id, name FROM playlists WHERE id = ?", (playlist_id,))
+        return self._q1("SELECT id, name, (path LIKE ?) AS editable FROM playlists WHERE id = ?",
+                        (USER_PLAYLIST_PREFIX + "%", playlist_id))
 
     def playlist_tracks(self, playlist_id: int) -> list[dict]:
         ids = [r["track_id"] for r in self._q(
             "SELECT track_id FROM playlist_items WHERE playlist_id = ? ORDER BY pos", (playlist_id,))]
         return self.tracks_by_ids(ids)
 
+    def create_playlist(self, name: str, track_ids: list[int] | None = None) -> int:
+        import uuid
+        c = self._conn()
+        pid = c.execute("INSERT INTO playlists(path, name, mtime) VALUES (?, ?, ?)",
+                        (USER_PLAYLIST_PREFIX + uuid.uuid4().hex, _playlist_name(name), time.time())).lastrowid
+        c.commit()
+        if track_ids:
+            self.set_playlist_tracks(pid, track_ids)
+        else:
+            self.bump()
+        return pid
+
+    def _editable(self, playlist_id: int) -> None:
+        p = self.playlist(playlist_id)
+        if not p:
+            raise KeyError(playlist_id)
+        if not p["editable"]:
+            raise PermissionError("playlists from .m3u files are edited in the music folder")
+
+    def rename_playlist(self, playlist_id: int, name: str) -> None:
+        self._editable(playlist_id)
+        c = self._conn()
+        c.execute("UPDATE playlists SET name = ?, mtime = ? WHERE id = ?",
+                  (_playlist_name(name), time.time(), playlist_id))
+        c.commit()
+        self.bump()
+
+    def set_playlist_tracks(self, playlist_id: int, track_ids: list[int]) -> None:
+        self._editable(playlist_id)
+        known = {t["id"] for t in self.tracks_by_ids(list(track_ids))}
+        ids = [t for t in track_ids if t in known][:10000]
+        c = self._conn()
+        c.execute("DELETE FROM playlist_items WHERE playlist_id = ?", (playlist_id,))
+        c.executemany("INSERT INTO playlist_items(playlist_id, pos, track_id) VALUES (?, ?, ?)",
+                      [(playlist_id, i, t) for i, t in enumerate(ids)])
+        c.execute("UPDATE playlists SET mtime = ? WHERE id = ?", (time.time(), playlist_id))
+        c.commit()
+        self.bump()
+
+    def add_to_playlist(self, playlist_id: int, track_ids: list[int]) -> None:
+        current = [t["id"] for t in self.playlist_tracks(playlist_id)]
+        self.set_playlist_tracks(playlist_id, current + list(track_ids))
+
+    def delete_playlist(self, playlist_id: int) -> None:
+        self._editable(playlist_id)
+        c = self._conn()
+        c.execute("DELETE FROM playlist_items WHERE playlist_id = ?", (playlist_id,))
+        c.execute("DELETE FROM playlists WHERE id = ?", (playlist_id,))
+        c.commit()
+        self.bump()
+
+    # -- play history ---------------------------------------------------
+    def record_play(self, track_id: int, device: str = "", at: float | None = None) -> None:
+        c = self._conn()
+        c.execute("INSERT INTO plays(track_id, played_at, device) VALUES (?, ?, ?)",
+                  (track_id, at or time.time(), device))
+        c.commit()
+
+    def recently_played(self, limit: int = 100) -> list[dict]:
+        """Music played lately, newest first, each track once."""
+        rows = self._q(
+            f"SELECT {TRACK_COLUMNS}, p.last_played, p.device FROM (SELECT track_id, MAX(played_at) AS last_played, "
+            "device FROM plays GROUP BY track_id) p JOIN tracks t ON t.id = p.track_id "
+            f"JOIN artists ar ON ar.id = t.artist_id JOIN albums al ON al.id = t.album_id "
+            f"JOIN genres g ON g.id = t.genre_id WHERE {MUSIC} ORDER BY p.last_played DESC LIMIT ?",
+            (limit,),
+        )
+        return rows
+
+    def most_played(self, limit: int = 25) -> list[dict]:
+        return self._q(
+            f"SELECT {TRACK_COLUMNS}, p.play_count, p.last_played FROM (SELECT track_id, COUNT(*) AS play_count, "
+            "MAX(played_at) AS last_played FROM plays GROUP BY track_id) p JOIN tracks t ON t.id = p.track_id "
+            f"JOIN artists ar ON ar.id = t.artist_id JOIN albums al ON al.id = t.album_id "
+            f"JOIN genres g ON g.id = t.genre_id WHERE {MUSIC} "
+            "ORDER BY p.play_count DESC, p.last_played DESC LIMIT ?",
+            (limit,),
+        )
+
+    def play_counts(self, track_ids: list[int]) -> dict[int, int]:
+        out: dict[int, int] = {}
+        unique = list(dict.fromkeys(track_ids))
+        for i in range(0, len(unique), 500):
+            chunk = unique[i:i + 500]
+            marks = ",".join("?" * len(chunk))
+            for r in self._q(f"SELECT track_id, COUNT(*) AS n FROM plays WHERE track_id IN ({marks}) "
+                             "GROUP BY track_id", chunk):
+                out[r["track_id"]] = r["n"]
+        return out
+
+    def history(self, limit: int = 100) -> list[dict]:
+        """Every play, newest first (music and podcasts)."""
+        return self._q(
+            f"SELECT {TRACK_COLUMNS}, p.played_at, p.device FROM plays p JOIN tracks t ON t.id = p.track_id "
+            "JOIN artists ar ON ar.id = t.artist_id JOIN albums al ON al.id = t.album_id "
+            "JOIN genres g ON g.id = t.genre_id ORDER BY p.played_at DESC LIMIT ?",
+            (limit,),
+        )
+
     def recently_added(self, limit: int = 100) -> list[dict]:
         return self._q(
-            f"SELECT {TRACK_COLUMNS} {TRACK_JOIN} ORDER BY t.added DESC, t.album_id, "
+            f"SELECT {TRACK_COLUMNS} {TRACK_JOIN} WHERE {MUSIC} ORDER BY t.added DESC, t.album_id, "
             f"{ALBUM_ORDER} LIMIT ?",
             (limit,),
         )
 
     def all_track_ids(self) -> list[int]:
-        return [r["id"] for r in self._q("SELECT id FROM tracks t ORDER BY t.title_sort")]
+        return [r["id"] for r in self._q(f"SELECT id FROM tracks t WHERE {MUSIC} ORDER BY t.title_sort")]
 
     def search(self, text: str, limit: int = 50) -> dict:
         like = f"%{text}%"
         return {
             "artists": self._q(
                 "SELECT ar.id, ar.name, COUNT(t.id) AS track_count FROM artists ar "
-                "JOIN tracks t ON t.artist_id = ar.id WHERE ar.name LIKE ? GROUP BY ar.id "
+                f"JOIN tracks t ON t.artist_id = ar.id WHERE ar.name LIKE ? AND {MUSIC} GROUP BY ar.id "
                 "ORDER BY ar.sort LIMIT ?", (like, limit)),
             "albums": self._q(
                 "SELECT al.id, al.title, al.year, ar.name AS artist, al.artist_id, "
                 "MIN(t.id) AS first_track, COUNT(t.id) AS track_count FROM albums al "
                 "JOIN artists ar ON ar.id = al.artist_id JOIN tracks t ON t.album_id = al.id "
-                "WHERE al.title LIKE ? GROUP BY al.id ORDER BY al.sort LIMIT ?", (like, limit)),
+                f"WHERE al.title LIKE ? AND {MUSIC} GROUP BY al.id ORDER BY al.sort LIMIT ?", (like, limit)),
             "tracks": self._q(
-                f"SELECT {TRACK_COLUMNS} {TRACK_JOIN} WHERE t.title LIKE ? OR t.artist LIKE ? "
+                f"SELECT {TRACK_COLUMNS} {TRACK_JOIN} WHERE (t.title LIKE ? OR t.artist LIKE ?) AND {MUSIC} "
                 "ORDER BY t.title_sort LIMIT ?", (like, like, limit)),
         }
+
+    # -- podcast episodes (see podcasts.py) -----------------------------
+    def add_episode_track(self, path: Path, md: dict, podcast_id: int) -> int:
+        """Store a downloaded episode as a track so every player can stream it."""
+        c = self._conn()
+        st = path.stat()
+        tid = self._store_track(c, str(path), st, md, None, podcast_id=podcast_id)
+        c.commit()
+        self.bump()
+        return tid
+
+    def remove_tracks(self, track_ids: list[int]) -> None:
+        if not track_ids:
+            return
+        c = self._conn()
+        c.executemany("DELETE FROM tracks WHERE id = ?", [(i,) for i in track_ids])
+        self._gc(c)
+        c.commit()
+        self.bump()
+
+
+def _playlist_name(name: str) -> str:
+    return " ".join(str(name or "").split())[:80] or "Untitled Playlist"
 
 
 def compile_prefix(pattern: str | None):

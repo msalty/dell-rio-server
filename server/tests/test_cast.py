@@ -83,26 +83,66 @@ async def test_play_album_streams_tracks_in_order(cast, library):
     _, status, ctype = await until(lambda: device.fetched and device.fetched[0], what="the stream fetch")
     assert status == 206 and ctype == "audio/mpeg"
 
-    r = await until(lambda: cast.player.state.get("track"), what="playing state")
+    r = await until(lambda: cast.player.state["st"] == "play" and cast.player.state.get("track"),
+                    what="playing state")
     state = (await rx(cast))["state"]
     assert state["st"] == "play" and state["track"]["title"] == "Something"
     assert state["qi"] == "1" and state["qn"] == "3"
     assert r["id"] == tracks[1]["id"]
 
-    # At the end of the track the next one starts...
+    # While it plays, the device is handed the next track to preload...
+    insert = await until(lambda: [p for p in device.received if p["type"] == "QUEUE_INSERT"], what="QUEUE_INSERT")
+    item = insert[0]["items"][0]
+    assert item["media"]["contentId"] == f"{base}/api/stream/{tracks[2]['id']}"
+    assert item["preloadTime"] > 0 and item["media"]["metadata"]["title"] == "Maxwell's Silver Hammer"
+    # ...and at the end of the track it goes straight on to it, without a new LOAD.
     device.finish_track()
-    await until(lambda: len(loads(device)) == 2, what="the next track")
-    assert loads(device)[1]["media"]["contentId"].endswith(f"/api/stream/{tracks[2]['id']}")
-    await until(lambda: cast.player.state.get("track", {}).get("title") == "Maxwell's Silver Hammer")
-    # ...a repeated report of the same ending doesn't skip another track...
+    await until(lambda: cast.player.state.get("track", {}).get("title") == "Maxwell's Silver Hammer",
+                what="the next track")
+    assert cast.player.state["qi"] == "2" and len(loads(device)) == 1
+    # A repeated report doesn't skip another track...
     device._media_status(0)
     await asyncio.sleep(0.3)
-    assert len(loads(device)) == 2
-    # ...and after the last track the player stops.
+    assert cast.player.state["qi"] == "2" and len(loads(device)) == 1
+    # ...and after the last track (nothing more to hand over) the player stops.
     device.finish_track()
     await until(lambda: cast.player.state["st"] == "stop", what="the queue to end")
     await asyncio.sleep(0.3)
-    assert len(loads(device)) == 2
+    assert len(loads(device)) == 1
+
+
+async def test_device_that_ignores_the_queue_still_moves_on(cast, library, monkeypatch):
+    monkeypatch.setattr(players, "PRELOAD_GRACE", 0.2)
+    device = cast.device
+    device.follow_queue = False
+    album = next(a for a in library.albums() if a["title"] == "Abbey Road")
+    tracks = library.tracks(album_id=album["id"])
+    await cast.post(f"/api/receivers/{cast.player.id}/play", json={"album_id": album["id"]})
+    await until(lambda: [p for p in device.received if p["type"] == "QUEUE_INSERT"], what="QUEUE_INSERT")
+    device.finish_track()
+    await until(lambda: len(loads(device)) == 2, what="the next track loaded the usual way")
+    assert loads(device)[1]["media"]["contentId"].endswith(f"/api/stream/{tracks[1]['id']}")
+    await until(lambda: cast.player.state["qi"] == "1")
+
+
+async def test_queue_changes_after_preload_are_followed(cast, library):
+    device = cast.device
+    album = next(a for a in library.albums() if a["title"] == "Abbey Road")
+    tracks = library.tracks(album_id=album["id"])
+    other = library.albums_by_title("Revolver")[0]
+    taxman = library.tracks(album_id=other["id"])[0]
+    await cast.post(f"/api/receivers/{cast.player.id}/play", json={"album_id": album["id"]})
+    await until(lambda: [p for p in device.received if p["type"] == "QUEUE_INSERT"], what="QUEUE_INSERT")
+    # "Play next" after the device was handed track 2: the device goes on to
+    # track 2 anyway, and the server puts Taxman on instead.
+    r = await cast.post(f"/api/receivers/{cast.player.id}/queue", json={"op": "next", "track_ids": [taxman["id"]]})
+    q = await r.json()
+    assert [t["title"] for t in q["tracks"]] == ["Come Together", "Taxman", "Something", "Maxwell's Silver Hammer"]
+    device.finish_track()
+    await until(lambda: len(loads(device)) == 2, what="the corrected track")
+    assert loads(device)[1]["media"]["contentId"].endswith(f"/api/stream/{taxman['id']}")
+    await until(lambda: cast.player.state.get("track", {}).get("title") == "Taxman")
+    assert tracks[1]["title"] == "Something"
 
 
 async def test_transport_commands(cast, library):

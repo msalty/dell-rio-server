@@ -12,7 +12,9 @@ from aiohttp import web
 
 from . import ids
 from .firmware import FirmwareStore
-from .receivers import Receiver
+from .players import track_state
+from .podcasts import PodcastError, make_opml, parse_opml
+from .receivers import QueueError, Receiver
 from .rio_classic import send_audio
 from .rio_ng import NGProtocol, NodeError
 
@@ -21,8 +23,11 @@ log = logging.getLogger(__name__)
 COVER_NAMES = ("cover", "folder", "front", "album", "albumart", "albumartsmall")
 COVER_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
 ARTIST_NAMES = ("artist", "artist-photo", "band")
-RECEIVER_COMMANDS = {"pause", "resume", "toggle", "stop", "next", "prev", "vol", "seek", "msg"}
+RECEIVER_COMMANDS = {"pause", "resume", "toggle", "stop", "next", "prev", "vol", "seek", "msg", "shuffle", "repeat"}
+QUEUE_OPS = {"next", "add", "move", "remove", "clear", "jump", "shuffle"}
 SLEEP_FADE = 20  # seconds over which a sleep timer fades the volume out
+FADE_STEPS = 24  # volume steps of an alarm's fade-in
+MAX_TRACKS = 10000
 
 
 def _track_json(t: dict) -> dict:
@@ -44,7 +49,32 @@ def _track_json(t: dict) -> dict:
         "vbr": bool(t["vbr"]),
         "sample_rate": t["sample_rate"],
         "path": t["path"],
+        "podcast_id": t.get("podcast_id"),
     }
+
+
+async def _body(req: web.Request) -> dict:
+    try:
+        body = await req.json()
+    except ValueError:
+        raise web.HTTPBadRequest(text="expected JSON")
+    if not isinstance(body, dict):
+        raise web.HTTPBadRequest(text="expected a JSON object")
+    return body
+
+
+def _ids(body: dict, key: str = "track_ids") -> list[int]:
+    try:
+        return [int(x) for x in body.get(key) or []][:MAX_TRACKS]
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text=f"{key} must be a list of numbers")
+
+
+def _int_field(body: dict, key: str, default: int = 0) -> int:
+    try:
+        return int(body.get(key, default) or 0)
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text=f"{key} must be a number")
 
 
 def _images(directory: Path) -> list[Path]:
@@ -102,6 +132,7 @@ class WebAPI:
         self.lib = ctx.library
         self._ng = NGProtocol(ctx)  # resolves what to play for players the server feeds
         self._sleepers: dict[str, asyncio.Task] = {}
+        self._faders: dict[str, asyncio.Task] = {}
         self._artist_art: dict[int, Path | int | None] = {}
         self._artist_art_version = None
 
@@ -130,6 +161,37 @@ class WebAPI:
             web.post("/api/receivers/{id}/command", self.receiver_command),
             web.post("/api/receivers/{id}/name", self.receiver_name),
             web.post("/api/receivers/{id}/sleep", self.receiver_sleep),
+            web.get("/api/receivers/{id}/queue", self.receiver_queue),
+            web.post("/api/receivers/{id}/queue", self.receiver_queue_edit),
+            web.post("/api/receivers/{id}/transfer", self.receiver_transfer),
+            web.post("/api/playlists", self.playlist_create),
+            web.post("/api/playlists/{id:\\d+}", self.playlist_update),
+            web.post("/api/playlists/{id:\\d+}/add", self.playlist_add),
+            web.delete("/api/playlists/{id:\\d+}", self.playlist_delete),
+            web.get("/api/history/recent", self.history_recent),
+            web.get("/api/history/top", self.history_top),
+            web.get("/api/history/log", self.history_log),
+            web.post("/api/progress", self.progress),
+            web.get("/api/tracks/{id:\\d+}/start", self.track_start),
+            web.get("/api/podcasts", self.podcasts),
+            web.post("/api/podcasts", self.podcast_subscribe),
+            web.get("/api/podcasts/opml", self.podcasts_opml),
+            web.post("/api/podcasts/opml", self.podcasts_import),
+            web.get("/api/podcasts/recent", self.podcasts_recent),
+            web.post("/api/podcasts/refresh", self.podcasts_refresh_all),
+            web.get("/api/podcasts/{id:\\d+}", self.podcast),
+            web.post("/api/podcasts/{id:\\d+}", self.podcast_update),
+            web.delete("/api/podcasts/{id:\\d+}", self.podcast_delete),
+            web.post("/api/podcasts/{id:\\d+}/refresh", self.podcast_refresh),
+            web.post("/api/episodes/{id:\\d+}", self.episode_update),
+            web.post("/api/episodes/{id:\\d+}/download", self.episode_download),
+            web.delete("/api/episodes/{id:\\d+}/download", self.episode_delete),
+            web.get("/api/art/podcast/{id:\\d+}", self.podcast_art),
+            web.get("/api/alarms", self.alarms),
+            web.post("/api/alarms", self.alarm_add),
+            web.post("/api/alarms/{id}", self.alarm_update),
+            web.delete("/api/alarms/{id}", self.alarm_delete),
+            web.post("/api/alarms/{id}/test", self.alarm_test),
             web.get("/api/firmware", self.firmware),
             web.post("/api/firmware", self.firmware_select),
             web.get("/api/firmware/{name}/download", self.firmware_download),
@@ -208,7 +270,12 @@ class WebAPI:
             limit = int(req.query.get("limit", 500))
         except ValueError:
             raise web.HTTPBadRequest()
-        return web.json_response({"total": len(tracks),
+        # Where each letter starts, for the A-Z bar (songs are in title order).
+        letters: dict[str, int] = {}
+        for i, t in enumerate(tracks):
+            first = (t["title_sort"] or "#")[:1].upper()
+            letters.setdefault(first if "A" <= first <= "Z" else "#", i)
+        return web.json_response({"total": len(tracks), "letters": letters,
                                   "tracks": [_track_json(t) for t in tracks[offset:offset + limit]]})
 
     async def playlists(self, req: web.Request) -> web.Response:
@@ -338,11 +405,13 @@ class WebAPI:
 
     async def receiver_play(self, req: web.Request) -> web.Response:
         r = self._receiver(req)
-        body = await req.json()
-        index = int(body.get("index", 0))
+        body = await _body(req)
+        index = _int_field(body, "index")
         shuffle = 1 if body.get("shuffle") else 0
+        start_ms = _int_field(body, "start_ms")
+        self._stop_fade(r)
         if "track_ids" in body:
-            track_ids = [int(x) for x in body["track_ids"]][:10000]
+            track_ids = _ids(body)
             if not track_ids:
                 raise web.HTTPBadRequest(text="empty queue")
             node = f"q:{self.ctx.receivers.store_queue(track_ids)}"
@@ -356,6 +425,8 @@ class WebAPI:
             raise web.HTTPBadRequest(text="nothing to play")
         if isinstance(r, Receiver):
             self.ctx.receivers.command(r, "play", node, index, shuffle)
+            if start_ms:
+                self.ctx.receivers.command(r, "seek", start_ms)
         else:
             try:
                 tracks = await self._run(self._ng.tracks_for, node)
@@ -363,19 +434,80 @@ class WebAPI:
                 raise web.HTTPBadRequest(text="nothing to play")
             if not tracks:
                 raise web.HTTPNotFound(text="nothing to play")
-            r.play(tracks, index, bool(shuffle))
+            r.play(tracks, index, bool(shuffle), start_ms or None)
         return web.json_response({"ok": True, "node": node})
+
+    # -- queues ------------------------------------------------------------
+    async def receiver_queue(self, req: web.Request) -> web.Response:
+        r = self._receiver(req)
+        view = self.ctx.receivers.queue_view(r)
+        tracks = await self._run(self.lib.tracks_by_ids, view.pop("track_ids"))
+        view["tracks"] = [_track_json(t) for t in tracks]
+        return web.json_response(view)
+
+    async def receiver_queue_edit(self, req: web.Request) -> web.Response:
+        r = self._receiver(req)
+        body = await _body(req)
+        op = str(body.get("op", ""))
+        if op not in QUEUE_OPS:
+            raise web.HTTPBadRequest(text="unknown queue change")
+        tracks = await self._run(self.lib.tracks_by_ids, _ids(body)) if "track_ids" in body else None
+        if op in ("next", "add") and not tracks:
+            raise web.HTTPBadRequest(text="nothing to add")
+        try:
+            self.ctx.receivers.edit(r, op, tracks, _int_field(body, "pos"), _int_field(body, "to"),
+                                    bool(body.get("on")))
+        except QueueError as exc:
+            raise web.HTTPConflict(text=str(exc))
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=str(exc))
+        return await self.receiver_queue(req)
+
+    async def receiver_transfer(self, req: web.Request) -> web.Response:
+        """Move what one player is playing to another (or, with "to" empty,
+        hand it to the browser asking): the queue, the track and where in it."""
+        src = self._receiver(req)
+        body = await _body(req)
+        to = str(body.get("to") or "")
+        reg = self.ctx.receivers
+        ids, index, pos, playing = reg.now_playing(src)
+        if not ids:
+            raise web.HTTPConflict(text=f"Nothing is playing on {src.name}")
+        tracks = await self._run(self.lib.tracks_by_ids, ids)
+        want = ids[index] if 0 <= index < len(ids) else None
+        index = next((i for i, t in enumerate(tracks) if t["id"] == want), 0)
+        dst = None
+        if to:
+            dst = reg.get(to)
+            if dst is None:
+                raise web.HTTPNotFound(text="unknown receiver")
+            if dst is src:
+                raise web.HTTPBadRequest(text="that is where it's playing already")
+            if isinstance(dst, Receiver) and dst.firmware != "ng":
+                raise web.HTTPConflict(text="that receiver runs firmware that can't be remote controlled")
+            self._stop_fade(dst)
+            reg.play(dst, tracks, index, False, pos)
+        reg.command(src, "pause")
+        return web.json_response({"ok": True, "to": dst.name if dst else "this browser",
+                                  "track_ids": [t["id"] for t in tracks], "index": index,
+                                  "pos_ms": pos, "playing": playing,
+                                  "tracks": [_track_json(t) for t in tracks]})
 
     async def receiver_command(self, req: web.Request) -> web.Response:
         r = self._receiver(req)
-        body = await req.json()
+        body = await _body(req)
         cmd = str(body.get("cmd", ""))
         if cmd not in RECEIVER_COMMANDS:
             raise web.HTTPBadRequest(text="unknown command")
         args = [cmd]
         if "value" in body:
             args.append(str(body["value"]).replace("\t", " ")[:200])
-        self.ctx.receivers.command(r, *args)
+        if cmd == "vol":
+            self._stop_fade(r)  # turning it down by hand ends an alarm's fade-in
+        try:
+            self.ctx.receivers.command(r, *args)
+        except QueueError as exc:
+            raise web.HTTPConflict(text=str(exc))
         return web.json_response({"ok": True})
 
     async def receiver_name(self, req: web.Request) -> web.Response:
@@ -457,3 +589,286 @@ class WebAPI:
             raise web.HTTPBadRequest(text="unknown firmware")
         fw.select(choice)
         return web.json_response({"ok": True, "selected": choice})
+
+    # -- playlists ---------------------------------------------------------
+    async def playlist_create(self, req: web.Request) -> web.Response:
+        body = await _body(req)
+        pid = await self._run(self.lib.create_playlist, str(body.get("name", "")), _ids(body))
+        return web.json_response(await self._run(self.lib.playlist, pid))
+
+    async def _playlist_change(self, fn, *args):
+        try:
+            return await self._run(fn, *args)
+        except KeyError:
+            raise web.HTTPNotFound(text="no such playlist")
+        except PermissionError as exc:
+            raise web.HTTPConflict(text=str(exc))
+
+    async def playlist_update(self, req: web.Request) -> web.Response:
+        pid = int(req.match_info["id"])
+        body = await _body(req)
+        if "name" in body:
+            await self._playlist_change(self.lib.rename_playlist, pid, str(body["name"]))
+        if "track_ids" in body:
+            await self._playlist_change(self.lib.set_playlist_tracks, pid, _ids(body))
+        return await self.playlist(req)
+
+    async def playlist_add(self, req: web.Request) -> web.Response:
+        pid = int(req.match_info["id"])
+        body = await _body(req)
+        await self._playlist_change(self.lib.add_to_playlist, pid, _ids(body))
+        return web.json_response(await self._run(self.lib.playlist, pid))
+
+    async def playlist_delete(self, req: web.Request) -> web.Response:
+        await self._playlist_change(self.lib.delete_playlist, int(req.match_info["id"]))
+        return web.json_response({"ok": True})
+
+    # -- history -----------------------------------------------------------
+    @staticmethod
+    def _limit(req: web.Request, default: int) -> int:
+        try:
+            return max(1, min(1000, int(req.query.get("limit", default))))
+        except ValueError:
+            raise web.HTTPBadRequest(text="limit must be a number")
+
+    async def history_recent(self, req: web.Request) -> web.Response:
+        rows = await self._run(self.lib.recently_played, self._limit(req, 100))
+        return web.json_response([{**_track_json(t), "played_at": t["last_played"]} for t in rows])
+
+    async def history_top(self, req: web.Request) -> web.Response:
+        rows = await self._run(self.lib.most_played, self._limit(req, 25))
+        return web.json_response([{**_track_json(t), "play_count": t["play_count"]} for t in rows])
+
+    async def history_log(self, req: web.Request) -> web.Response:
+        rows = await self._run(self.lib.history, self._limit(req, 100))
+        return web.json_response([{**_track_json(t), "played_at": t["played_at"], "device": t["device"]}
+                                  for t in rows])
+
+    # -- the browser's own player ---------------------------------------------
+    @staticmethod
+    def _client_id(value) -> str:
+        return "web:" + "".join(ch for ch in str(value or "browser") if ch.isalnum() or ch in "-_")[:40]
+
+    async def progress(self, req: web.Request) -> web.Response:
+        """The web interface's player reports what it plays, for the play
+        history and podcast positions."""
+        body = await _body(req)
+        tracker = getattr(self.ctx, "tracker", None)
+        t = await self._run(self.lib.track, _int_field(body, "track_id"))
+        if tracker is not None and t:
+            st = str(body.get("st") or "play")
+            if st not in ("play", "pause", "stop", "buffer"):
+                st = "play"
+            name = str(body.get("name") or "Web browser")[:40]
+            tracker.report(self._client_id(body.get("client")), name, track_state(t), st,
+                           max(0, _int_field(body, "pos_ms")))
+        return web.json_response({"ok": True})
+
+    async def track_start(self, req: web.Request) -> web.Response:
+        """Where the browser should start a track (podcast resume)."""
+        t = await self._run(self.lib.track, int(req.match_info["id"]))
+        if not t:
+            raise web.HTTPNotFound()
+        tracker = getattr(self.ctx, "tracker", None)
+        start = tracker.start_position(self._client_id(req.query.get("client")), t) if tracker else 0
+        return web.json_response({"start_ms": start})
+
+    # -- podcasts --------------------------------------------------------------
+    def _pods(self):
+        pods = getattr(self.ctx, "podcasts", None)
+        if pods is None:
+            raise web.HTTPNotFound(text="podcasts are switched off")
+        return pods
+
+    async def podcasts(self, req: web.Request) -> web.Response:
+        return web.json_response(await self._run(self._pods().shows))
+
+    async def podcast(self, req: web.Request) -> web.Response:
+        p = await self._run(self._pods().show, int(req.match_info["id"]))
+        if not p:
+            raise web.HTTPNotFound(text="no such podcast")
+        return web.json_response(p)
+
+    async def podcast_subscribe(self, req: web.Request) -> web.Response:
+        body = await _body(req)
+        try:
+            pid = await self._pods().subscribe(str(body.get("url", "")), _int_field(body, "keep", 3) or 3)
+        except PodcastError as exc:
+            raise web.HTTPBadRequest(text=str(exc))
+        except Exception as exc:  # network trouble of any kind
+            raise web.HTTPBadGateway(text=f"the feed couldn't be fetched: {exc}")
+        return web.json_response(await self._run(self._pods().show, pid))
+
+    async def podcast_update(self, req: web.Request) -> web.Response:
+        pid = int(req.match_info["id"])
+        body = await _body(req)
+        if "keep" in body:
+            await self._run(self._pods().set_keep, pid, _int_field(body, "keep"))
+        return await self.podcast(req)
+
+    async def podcast_delete(self, req: web.Request) -> web.Response:
+        await self._run(self._pods().unsubscribe, int(req.match_info["id"]))
+        return web.json_response({"ok": True})
+
+    async def podcast_refresh(self, req: web.Request) -> web.Response:
+        await self._pods().refresh(int(req.match_info["id"]))
+        return await self.podcast(req)
+
+    async def podcasts_refresh_all(self, req: web.Request) -> web.Response:
+        asyncio.create_task(self._pods().refresh_all())
+        return web.json_response({"ok": True})
+
+    async def podcasts_recent(self, req: web.Request) -> web.Response:
+        tracks = await self._run(self._pods().recent_episode_tracks, self._limit(req, 30))
+        return web.json_response([{**_track_json(t), "episode_id": t["episode_id"], "position_ms": t["position_ms"],
+                                   "played": t["played"], "published": t["published"]} for t in tracks])
+
+    async def podcasts_opml(self, req: web.Request) -> web.Response:
+        shows = await self._run(self._pods().shows)
+        return web.Response(text=make_opml(shows), content_type="text/x-opml", headers={
+            "Content-Disposition": 'attachment; filename="rioserver-podcasts.opml"'})
+
+    async def podcasts_import(self, req: web.Request) -> web.Response:
+        data = await req.read()
+        try:
+            urls = parse_opml(data)
+        except PodcastError as exc:
+            raise web.HTTPBadRequest(text=str(exc))
+        added, failed = 0, []
+        for url in urls[:200]:
+            try:
+                await self._pods().subscribe(url)
+                added += 1
+            except Exception as exc:
+                failed.append({"url": url, "error": str(exc)[:200]})
+        return web.json_response({"added": added, "failed": failed})
+
+    async def _episode(self, fn, *args):
+        try:
+            return await self._run(fn, *args)
+        except KeyError:
+            raise web.HTTPNotFound(text="no such episode")
+        except PodcastError as exc:
+            raise web.HTTPConflict(text=str(exc))
+
+    async def episode_update(self, req: web.Request) -> web.Response:
+        eid = int(req.match_info["id"])
+        body = await _body(req)
+        played = bool(body["played"]) if "played" in body else None
+        position = _int_field(body, "position_ms") if "position_ms" in body else None
+        await self._episode(self._pods().mark, eid, played, position)
+        return web.json_response(await self._run(self._pods().episode, eid))
+
+    async def episode_download(self, req: web.Request) -> web.Response:
+        eid = int(req.match_info["id"])
+        await self._episode(self._pods().download, eid)
+        return web.json_response(await self._run(self._pods().episode, eid))
+
+    async def episode_delete(self, req: web.Request) -> web.Response:
+        eid = int(req.match_info["id"])
+        await self._episode(self._pods().delete_download, eid)
+        return web.json_response(await self._run(self._pods().episode, eid))
+
+    async def podcast_art(self, req: web.Request) -> web.Response:
+        path = self._pods().cover_path(int(req.match_info["id"]))
+        if path is None:
+            raise web.HTTPNotFound()
+        return web.FileResponse(path, headers={"Cache-Control": "public, max-age=3600"})
+
+    # -- alarms ------------------------------------------------------------------
+    def _alarms(self):
+        clock = getattr(self.ctx, "alarms", None)
+        if clock is None:
+            raise web.HTTPNotFound(text="alarms aren't available")
+        return clock
+
+    async def alarms(self, req: web.Request) -> web.Response:
+        return web.json_response(self._alarms().listing())
+
+    async def alarm_add(self, req: web.Request) -> web.Response:
+        try:
+            self._alarms().add(await _body(req))
+        except (TypeError, ValueError) as exc:
+            raise web.HTTPBadRequest(text=str(exc))
+        return web.json_response(self._alarms().listing())
+
+    async def alarm_update(self, req: web.Request) -> web.Response:
+        try:
+            self._alarms().update(req.match_info["id"], await _body(req))
+        except KeyError:
+            raise web.HTTPNotFound(text="no such alarm")
+        except (TypeError, ValueError) as exc:
+            raise web.HTTPBadRequest(text=str(exc))
+        return web.json_response(self._alarms().listing())
+
+    async def alarm_delete(self, req: web.Request) -> web.Response:
+        self._alarms().delete(req.match_info["id"])
+        return web.json_response(self._alarms().listing())
+
+    async def alarm_test(self, req: web.Request) -> web.Response:
+        a = self._alarms().get(req.match_info["id"])
+        if a is None:
+            raise web.HTTPNotFound(text="no such alarm")
+        try:
+            await self.fire_alarm({**a, "fade": min(a["fade"], 1)})
+        except LookupError as exc:
+            raise web.HTTPConflict(text=str(exc))
+        return web.json_response({"ok": True})
+
+    def _alarm_tracks(self, source: dict) -> list[dict]:
+        kind, sid = source["type"], source.get("id") or 0
+        if kind == "playlist":
+            return self.lib.playlist_tracks(sid)
+        if kind == "album":
+            return self.lib.tracks(album_id=sid)
+        if kind == "artist":
+            return self._ng.tracks_for(f"ar:{sid}/all")
+        if kind == "top25":
+            return self.lib.most_played(25)
+        if kind == "played":
+            return self.lib.recently_played(100)
+        if kind == "podcast":
+            pods = getattr(self.ctx, "podcasts", None)
+            eps = pods.episode_tracks(sid) if pods else []
+            fresh = [t for t in eps if not t["played"]]
+            return (fresh or eps)[:1]
+        return self.lib.tracks()  # shuffle the whole library
+
+    async def fire_alarm(self, alarm: dict) -> None:
+        """Start an alarm: silence, play, then fade up to its volume."""
+        reg = self.ctx.receivers
+        r = reg.get(alarm["receiver"])
+        if r is None or (isinstance(r, Receiver) and r.firmware != "ng"):
+            raise LookupError("the alarm's receiver isn't available")
+        tracks = await self._run(self._alarm_tracks, alarm["source"])
+        if not tracks:
+            raise LookupError("there's nothing to play for this alarm")
+        shuffle = alarm.get("shuffle") or alarm["source"]["type"] == "shuffle"
+        index = 0
+        if shuffle:
+            import random
+            index = random.randrange(len(tracks))
+        target = int(alarm.get("volume") or 40)
+        fade = max(0.0, float(alarm.get("fade") or 0)) * 60
+        self._stop_fade(r)
+        reg.command(r, "vol", 1 if fade else target)
+        reg.play(r, tracks, index, bool(shuffle))
+        if fade:
+            self._faders[r.key] = asyncio.create_task(self._fade_in(r, target, fade))
+
+    async def _fade_in(self, r, target: int, seconds: float) -> None:
+        reg = self.ctx.receivers
+        try:
+            for i in range(1, FADE_STEPS + 1):
+                await asyncio.sleep(seconds / FADE_STEPS)
+                reg.command(r, "vol", max(1, round(target * i / FADE_STEPS)))
+        except asyncio.CancelledError:
+            return
+        finally:
+            if self._faders.get(r.key) is asyncio.current_task():
+                del self._faders[r.key]
+
+    def _stop_fade(self, r) -> None:
+        task = self._faders.pop(r.key, None)
+        if task:
+            task.cancel()

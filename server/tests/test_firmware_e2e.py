@@ -500,3 +500,50 @@ def test_now_playing_keeps_scrolling_a_long_title(tmp_path):
             assert moving_at and moving_at[-1] > 20, "the title stopped scrolling"
         finally:
             rx.stop()
+
+
+def test_play_next_reaches_the_firmware_without_interrupting(server, tmp_path):
+    """Firmware 1.6 takes a changed queue from the server and plays on."""
+    import json
+    import urllib.request
+
+    from simulate import Receiver
+
+    def api(path, body=None):
+        req = urllib.request.Request(f"http://{server}{path}", data=json.dumps(body).encode() if body else None,
+                                     headers={"Content-Type": "application/json"})
+        return json.load(urllib.request.urlopen(req))
+
+    rx = Receiver(str(FIRMWARE), server, workdir=str(tmp_path / "rx"))
+    try:
+        time.sleep(3)
+        rid = api("/api/receivers")[0]["id"]
+        albums = api("/api/albums")
+        abbey = next(a for a in albums if a["title"] == "Abbey Road")
+        revolver = next(a for a in albums if a["title"] == "Revolver")
+        taxman = api(f"/api/albums/{revolver['id']}")["tracks"][0]
+        api(f"/api/receivers/{rid}/play", {"album_id": abbey["id"]})
+        deadline = time.time() + 5
+        while '"Come Together"' not in rx.console() and time.time() < deadline:
+            time.sleep(0.1)
+        assert '"Come Together"' in rx.console(), rx.console()
+        q = api(f"/api/receivers/{rid}/queue")
+        assert q["known"] and q["editable"], q
+        q = api(f"/api/receivers/{rid}/queue", {"op": "next", "track_ids": [taxman["id"]]})
+        assert [t["title"] for t in q["tracks"]][:2] == ["Come Together", "Taxman"]
+        deadline = time.time() + 10
+        while '"Something"' not in rx.console() and time.time() < deadline:
+            time.sleep(0.2)
+        log = rx.console()
+        played = [line.split('"')[1] for line in log.splitlines() if "player: playing" in line]
+        assert played[:3] == ["Come Together", "Taxman", "Something"], log
+        # The server's copy follows along (at the receiver's next status poll).
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            q = api(f"/api/receivers/{rid}/queue")
+            if q["index"] >= 2:
+                break
+            time.sleep(0.5)
+        assert q["known"] and q["tracks"][q["index"]]["title"] in ("Something", "Maxwell's Silver Hammer"), q
+    finally:
+        rx.stop()
