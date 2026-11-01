@@ -465,3 +465,29 @@ input[type=range] { accent-color: var(--accent); height: 4px; cursor: pointer; }
   .alarm .info { grid-column: 1 / -1; grid-row: 2; }
   .episode { grid-template-columns: 1fr; }
 }
+
+/* this device as a receiver */
+.rx-pill { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--accent); background: var(--accent-soft); color: var(--accent); border-radius: 99px; padding: 7px 12px; font-weight: 600; font-size: 13px; cursor: pointer; max-width: 200px; flex: none; }
+.rx-pill .rx-pill-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rx-pill.off { border-color: var(--line); color: var(--muted); background: var(--panel); }
+.rx-pill.off .dot { background: var(--faint); box-shadow: none; animation: blink 1s ease-in-out infinite; }
+@keyframes blink { 50% { opacity: .3; } }
+.rx-pill:not([hidden]) + .target { margin-left: 0; }
+.card .tag { font-size: 11px; font-weight: 700; color: var(--accent); background: var(--accent-soft); border-radius: 99px; padding: 2px 8px; white-space: nowrap; }
+.card > .btn.small { margin-top: 12px; }
+.card.add-self { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 6px; text-align: left; cursor: pointer; border-style: dashed; background: transparent; min-height: 160px; color: var(--text); font: inherit; }
+.card.add-self:hover { border-color: var(--accent); background: var(--accent-soft); }
+.card.add-self .add-self-icon { color: var(--accent); display: inline-flex; margin-bottom: 4px; }
+.card.add-self .add-self-icon svg { width: 28px; height: 28px; }
+.rx-resume { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; cursor: pointer; padding: 24px; text-align: center; }
+.rx-resume .brand-mark.big { width: 72px; height: 72px; border-width: 6px; }
+.rx-resume .brand-mark.big::after { inset: 17px; }
+.rx-resume-name { font-size: 28px; font-weight: 700; }
+.rx-resume-hint { color: var(--muted); font-size: 17px; }
+.rx-resume .rx-quit { margin-top: 30px; font-size: 13px; color: var(--muted); }
+@media (max-width: 860px) {
+  .rx-pill { padding: 7px 10px; max-width: 120px; }
+  .rx-pill + .target { margin-left: 0; }
+}
+.np-head .where.is-self { color: var(--accent); cursor: pointer; flex: 0 1 auto; margin: 0 auto; border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 99px; padding: 5px 12px; letter-spacing: 1px; }
+

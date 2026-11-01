@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import logging
 import time
 from pathlib import Path
@@ -17,6 +18,7 @@ from .podcasts import PodcastError, make_opml, parse_opml
 from .receivers import QueueError, Receiver
 from .rio_classic import send_audio
 from .rio_ng import NGProtocol, NodeError
+from .webplayer import BrowserPlayer, device_model
 
 log = logging.getLogger(__name__)
 
@@ -164,6 +166,8 @@ class WebAPI:
             web.get("/api/receivers/{id}/queue", self.receiver_queue),
             web.post("/api/receivers/{id}/queue", self.receiver_queue_edit),
             web.post("/api/receivers/{id}/transfer", self.receiver_transfer),
+            web.delete("/api/receivers/{id}", self.receiver_forget),
+            web.get("/api/player/ws", self.player_ws),
             web.post("/api/playlists", self.playlist_create),
             web.post("/api/playlists/{id:\\d+}", self.playlist_update),
             web.post("/api/playlists/{id:\\d+}/add", self.playlist_add),
@@ -872,3 +876,52 @@ class WebAPI:
         task = self._faders.pop(r.key, None)
         if task:
             task.cancel()
+
+    # -- this browser as a receiver ---------------------------------------------
+    async def player_ws(self, req: web.Request) -> web.WebSocketResponse:
+        """A browser in receiver mode (see webplayer.py)."""
+        client = "".join(ch for ch in req.query.get("id", "") if ch.isalnum() or ch in "-_")[:40]
+        if not client:
+            raise web.HTTPBadRequest(text="id is required")
+        ws = web.WebSocketResponse(heartbeat=20)
+        await ws.prepare(req)
+        reg = self.ctx.receivers
+        pid = f"web-{client}"
+        player = reg.get(pid)
+        if not isinstance(player, BrowserPlayer):
+            player = BrowserPlayer(pid, asyncio.get_running_loop())
+            reg.add(player)
+        player.attach(ws, req.remote or "", device_model(req.headers.get("User-Agent", "")))
+        log.info("%s is a receiver now (%s)", player.name, player.model)
+        await ws.send_str(json.dumps({"type": "welcome", "id": pid}))
+        try:
+            async for msg in ws:
+                if msg.type != web.WSMsgType.TEXT:
+                    continue
+                try:
+                    data = json.loads(msg.data)
+                except ValueError:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                if data.get("type") == "hello":
+                    player.volume_supported = data.get("volume") is not False
+                    name = str(data.get("name") or "").strip()
+                    if name and name != player.name:
+                        reg.rename(player, name)
+                else:
+                    player.handle(data)
+        finally:
+            player.detach(ws)
+            log.info("%s disconnected", player.name)
+        return ws
+
+    async def receiver_forget(self, req: web.Request) -> web.Response:
+        """Remove a browser receiver from the list (when it's offline)."""
+        r = self.ctx.receivers.get(req.match_info["id"])
+        if not isinstance(r, BrowserPlayer):
+            raise web.HTTPConflict(text="only browsers used as receivers can be forgotten")
+        if r.online:
+            raise web.HTTPConflict(text="it is still connected; stop receiver mode on that device instead")
+        self.ctx.receivers.remove(r.id)
+        return web.json_response({"ok": True})

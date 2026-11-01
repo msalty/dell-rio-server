@@ -887,7 +887,7 @@ function albumMenu(al) {
 // ---------------------------------------------------------------- moving playback between players
 
 function moveTargets(exclude) {
-  const list = [{ id: "", name: "This browser" }].concat(
+  const list = (RX.on ? [] : [{ id: "", name: "This browser" }]).concat(
     Player.receivers.filter((r) => canTarget(r) && r.online).map((r) => ({ id: r.id, name: r.name })));
   return list.filter((x) => x.id !== exclude);
 }
@@ -994,7 +994,9 @@ const NowPlaying = {
     const vol = trackBusy(h("input", { type: "range", min: 0, max: 100, value: $("#volume").value, class: "vol-input", "aria-label": "Volume",
       oninput: (e) => setVolume(Number(e.target.value)) }));
     this.bg = h("div", { class: "bg" });
-    this.where = h("div", { class: "where" });
+    // On a device that is a receiver, the header says so and opens its menu
+    // (the display covers the top bar's pill).
+    this.where = h("div", { class: "where", onclick: (e) => { if (RX.on && Player.target === RX.id) rxMenu(e.currentTarget); } });
     this.art = h("div", { class: "big-art" });
     this.title = h("h2");
     this.sub = h("div", { class: "sub" });
@@ -1056,7 +1058,9 @@ const NowPlaying = {
   render(ns) {
     if (!this.built || this.el.hidden) return;
     const t = ns.t;
-    this.where.textContent = Player.target ? `Playing on ${ns.r ? ns.r.name : "a receiver"}` : "Playing in this browser";
+    const self = RX.on && Player.target === RX.id;
+    this.where.textContent = self ? `This device · ${RX.name}` : Player.target ? `Playing on ${ns.r ? ns.r.name : "a receiver"}` : "Playing in this browser";
+    this.where.classList.toggle("is-self", self);
     const key = t ? String(t.album_id) : "";
     if (this.art.dataset.key !== key) {
       this.art.dataset.key = key;
@@ -1184,6 +1188,267 @@ function sortable(container, selector, onMove, canDrop = () => true) {
   }
 }
 
+// ---------------------------------------------------------------- this device as a receiver
+
+// "Use this device as a receiver": the browser connects to the server
+// (webplayer.py) and plays what it's told to, like a Chromecast, so a tablet
+// or old phone plugged into a stereo becomes a speaker the other devices can
+// send music to. Its own Now Playing view becomes its display.
+//
+// Browsers only play sound after a tap, so starting (and resuming after a
+// reload) takes one. Two audio elements take turns, so the next track is
+// ready to go on to without a gap.
+const RX = {
+  name: "",
+  id: "",          // the player id the server gave it, once connected
+  on: false,
+  ws: null,
+  els: [new Audio(), new Audio()],
+  cur: 0,
+  track: null,     // what the active element plays
+  pre: null,       // {track} loaded in the other element, to go on to
+  retry: 0,
+  timer: null,
+  wake: null,
+  volumeWorks: (() => { const a = new Audio(); a.volume = 0.5; return a.volume === 0.5; })(),
+
+  get el() { return this.els[this.cur]; },
+  get other() { return this.els[1 - this.cur]; },
+  saved() { try { return JSON.parse(store("rio.receiver") || "null"); } catch { return null; } },
+  defaultName() {
+    const ua = navigator.userAgent;
+    if (/Silk|\bKF[A-Z]{2,}\b/.test(ua)) return "Fire Tablet";
+    if (/iPhone/.test(ua)) return "iPhone";
+    if (/iPad/.test(ua)) return "iPad";
+    if (/Android/.test(ua)) return "Android";
+    return "This computer";
+  },
+
+  // Called from a tap: unlock sound, connect, and show the display.
+  start(name) {
+    this.name = name;
+    store("rio.receiver", JSON.stringify({ name }));
+    // Playing each audio element once during the tap lets the page play it
+    // later without one. The one that has a song carries on with it.
+    for (const el of this.els) {
+      if (el === this.el && this.track) { this.play(el); continue; }
+      if (!el.getAttribute("src") || !this.pre) el.src = silentWav();
+      const p = el.play();
+      if (p) p.then(() => { el.pause(); el.currentTime = 0; }).catch(() => {});
+    }
+    this.on = true;
+    document.body.classList.add("is-receiver");
+    if ($("#rx-resume")) $("#rx-resume").remove();
+    if (!this.ws || this.ws.readyState > 1) this.connect();
+    else this.send({ type: "hello", name: this.name, volume: this.volumeWorks });
+    this.keepAwake();
+    renderPill();
+    NowPlaying.open();
+  },
+  stop() {
+    this.on = false;
+    store("rio.receiver", null);
+    document.body.classList.remove("is-receiver");
+    clearTimeout(this.timer);
+    if (this.ws) { this.ws.onclose = null; this.ws.close(); }
+    this.ws = null;
+    for (const el of this.els) { el.pause(); el.removeAttribute("src"); el.load(); }
+    this.track = this.pre = null;
+    if (this.wake) { this.wake.release().catch(() => {}); this.wake = null; }
+    if (Player.target === this.id) setTarget("");
+    this.id = "";
+    renderPill();
+    pollReceivers();
+    toast("This device is no longer a receiver");
+  },
+  connect() {
+    const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/player/ws?id=${encodeURIComponent(clientId)}`;
+    const ws = new WebSocket(url);
+    this.ws = ws;
+    ws.onopen = () => {
+      this.retry = 0;
+      this.send({ type: "hello", name: this.name, volume: this.volumeWorks });
+      this.report();
+    };
+    ws.onmessage = (e) => { try { this.handle(JSON.parse(e.data)); } catch (err) { console.error(err); } };
+    ws.onclose = () => {
+      if (!this.on) return;
+      renderPill();
+      // Try again, more slowly each time (the server restarting, Wi-Fi dropping).
+      this.timer = setTimeout(() => { if (this.on) this.connect(); }, Math.min(10000, 1000 * 2 ** this.retry++));
+    };
+  },
+  send(msg) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
+  },
+  state() {
+    const el = this.el;
+    if (!this.track || el.ended) return "stop";
+    if (el.paused) return "pause";
+    return el.readyState < 3 ? "buffer" : "play";
+  },
+  report() {
+    this.send({ type: "status", st: this.state(), pos: Math.round((this.el.currentTime || 0) * 1000),
+      track_id: this.track ? this.track.id : null, vol: Math.round(this.el.volume * 100) });
+  },
+  play(el) {
+    const p = el.play();
+    if (p) {
+      p.catch((err) => {
+        // Sound isn't unlocked any more (the browser reloaded the page): ask for a tap.
+        if (err && err.name === "NotAllowedError") showResume(true);
+        this.report();
+      });
+    }
+  },
+  handle(m) {
+    const el = this.el;
+    if (m.type === "welcome") {
+      this.id = m.id;
+      setTarget(m.id);
+      renderPill();
+      pollReceivers();
+    } else if (m.type === "load") {
+      this.pre = null;
+      this.other.pause();
+      this.track = m.track;
+      el.src = m.url;
+      if (m.start) el.addEventListener("loadedmetadata", () => { el.currentTime = m.start; }, { once: true });
+      this.play(el);
+      this.setMeta();
+    } else if (m.type === "preload") {
+      const o = this.other;
+      o.src = m.url;
+      o.preload = "auto";
+      o.load();
+      this.pre = { track: m.track };
+    } else if (m.type === "pause") {
+      el.pause();
+    } else if (m.type === "resume") {
+      this.play(el);
+    } else if (m.type === "stop") {
+      el.pause();
+      this.track = null;
+      this.pre = null;
+    } else if (m.type === "seek") {
+      el.currentTime = m.to;
+    } else if (m.type === "volume") {
+      for (const a of this.els) a.volume = Math.max(0, Math.min(1, m.level));
+    }
+    this.report();
+  },
+  ended(el) {
+    if (el !== this.el) return;
+    if (this.pre) {
+      // Straight on to the track that's ready in the other element.
+      this.cur = 1 - this.cur;
+      this.track = this.pre.track;
+      this.pre = null;
+      this.play(this.el);
+      this.setMeta();
+      this.report();
+    } else if (this.track) {
+      this.send({ type: "ended", track_id: this.track.id });
+      this.report();
+    }
+  },
+  failed(el) {
+    if (el === this.el && this.track && el.getAttribute("src") && !el.src.startsWith("blob:")) {
+      this.send({ type: "ended", track_id: this.track.id, failed: true });
+    } else if (el === this.other) {
+      this.pre = null; // the server starts it the usual way when the time comes
+    }
+  },
+  setMeta() {
+    if (!("mediaSession" in navigator) || !this.track) return;
+    const t = this.track;
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: t.title, artist: t.artist, album: t.album, artwork: [{ src: albumArtUrl(t.album_id), sizes: "512x512" }],
+    });
+  },
+  // Keep the screen on while it's a receiver (iOS 16.4+, Android, Fire).
+  async keepAwake() {
+    if (!this.on || !("wakeLock" in navigator) || document.hidden) return;
+    try {
+      this.wake = await navigator.wakeLock.request("screen");
+    } catch { /* not allowed now; tried again when the page is shown */ }
+  },
+};
+for (const el of RX.els) {
+  el.preload = "auto";
+  el.addEventListener("ended", () => RX.ended(el));
+  el.addEventListener("error", () => RX.failed(el));
+  for (const ev of ["play", "pause", "playing", "waiting", "seeked"]) el.addEventListener(ev, () => { if (el === RX.el) RX.report(); });
+}
+setInterval(() => { if (RX.on && RX.track && !RX.el.paused) RX.report(); }, 2000);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden || !RX.on) return;
+  RX.keepAwake();
+  if (!RX.ws || RX.ws.readyState > 1) { clearTimeout(RX.timer); RX.connect(); }
+});
+
+// A short silent sound, played on the tap that unlocks audio.
+function silentWav() {
+  const n = 400, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); w(8, "WAVE"); w(12, "fmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 8000, true); v.setUint32(28, 16000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  w(36, "data"); v.setUint32(40, n * 2, true);
+  return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+}
+
+// The setup sheet: a name, and the tap that starts it.
+async function becomeReceiver() {
+  const input = h("input", { type: "text", value: (RX.saved() || {}).name || RX.defaultName(), maxlength: 40, required: true });
+  const body = h("div", { style: "display:flex;flex-direction:column;gap:12px" },
+    h("p", { class: "subtle", style: "margin:0" },
+      "Other devices can then send music here, for example to a tablet or old phone plugged into a stereo. Keep this page open; the screen stays on while it plays."),
+    h("label", { class: "field" }, "Name", input),
+    RX.volumeWorks ? null : h("p", { class: "subtle", style: "margin:0;font-size:13px" },
+      "On iPhone and iPad the volume is set with the device's buttons (or the stereo), not from other devices."));
+  const name = await dialog("Use this device as a receiver", body, { ok: "Start", collect: () => input.value.trim() || undefined });
+  if (name) RX.start(name); // still inside the tap on Start, so sound unlocks
+}
+
+// After a reload: one tap brings it back (browsers need it for sound).
+function showResume(force) {
+  const saved = RX.saved();
+  if (!saved || $("#rx-resume")) return;
+  if (RX.on && !force) return;
+  const el = h("div", { class: "rx-resume", id: "rx-resume", role: "button", tabindex: "0",
+    onclick: (e) => { if (!e.target.closest(".rx-quit")) { el.remove(); RX.start(saved.name); } } },
+  h("div", { class: "brand-mark big" }),
+  h("div", { class: "rx-resume-name" }, saved.name),
+  h("div", { class: "rx-resume-hint" }, RX.on ? "Tap to carry on playing" : "Tap to start the receiver"),
+  h("button", { class: "btn rx-quit", onclick: () => { el.remove(); if (RX.on) RX.stop(); else store("rio.receiver", null); renderPill(); } },
+    "Stop using this device as a receiver"));
+  document.body.append(el);
+}
+
+// The pill in the top bar: always shows that this device is a receiver.
+function renderPill() {
+  const pill = $("#rx-pill");
+  pill.hidden = !RX.on;
+  if (!RX.on) return;
+  const connected = RX.ws && RX.ws.readyState === WebSocket.OPEN;
+  pill.classList.toggle("off", !connected);
+  pill.replaceChildren(h("span", { class: "dot on" }), h("span", { class: "rx-pill-name" }, RX.name));
+  pill.title = connected ? `This device is the receiver “${RX.name}”` : "Reconnecting to the server…";
+}
+function rxMenu(anchor) {
+  showMenu(anchor, [
+  { label: "Show the display", icon: "album", run: () => { setTarget(RX.id); NowPlaying.open(); } },
+  { label: "Rename…", icon: "edit", run: async () => {
+    const n = await askText("Rename this receiver", "Name", RX.name);
+    if (n) { RX.name = n; store("rio.receiver", JSON.stringify({ name: n })); RX.send({ type: "hello", name: n, volume: RX.volumeWorks }); renderPill(); setTimeout(pollReceivers, 300); }
+  } },
+  "-",
+  { label: "Stop being a receiver", icon: "x", danger: true, run: () => RX.stop() },
+  ], `Receiver: ${RX.name}`);
+}
+$("#rx-pill").addEventListener("click", (e) => rxMenu(e.currentTarget));
+
 // ---------------------------------------------------------------- receivers
 
 // Rio receivers need the RioServer NG firmware to take music from here;
@@ -1210,8 +1475,11 @@ async function pollReceivers() {
   }
   Player._statusAt = Date.now();
   const sel = $("#target");
-  const want = [["", "This browser"]].concat(
-    Player.receivers.filter(canTarget).map((r) => [r.id, `${r.name}${r.online ? "" : " (offline)"}`]),
+  // A device that is a receiver plays through its receiver; "This browser"
+  // would be the same thing twice.
+  const want = (RX.on ? [] : [["", "This browser"]]).concat(
+    Player.receivers.filter(canTarget).map((r) => [r.id,
+      r.id === RX.id ? `This device (${r.name})` : `${r.name}${r.online ? "" : " (offline)"}`]),
   );
   const have = [...sel.options].map((o) => [o.value, o.textContent]);
   if (JSON.stringify(want) !== JSON.stringify(have)) {
@@ -1224,8 +1492,10 @@ async function pollReceivers() {
     Player.target = moved.id;
     store("rio.target", moved.id);
   }
-  if (Player.target && !Player.receivers.some((r) => r.id === Player.target)) Player.target = "";
+  if (Player.target && !Player.receivers.some((r) => r.id === Player.target)) Player.target = RX.on ? RX.id : "";
+  if (RX.on && RX.id && !Player.target) Player.target = RX.id;
   sel.value = Player.target;
+  renderPill();
   showTarget();
   const online = Player.receivers.filter((r) => r.online).length;
   const pill = $("#receiver-count");
@@ -1873,7 +2143,10 @@ function receiverCard(id) {
     class: "btn send",
     onclick: () => { setTarget(id); toast(`Music goes to ${r().name}`); },
   }, "Send music here");
-  const el = h("div", { class: "card" }, h("h3", {}, dot, name, rename), meta, now, ctrl, send);
+  const mine = h("span", { class: "tag" }, "This device");
+  const forget = h("button", { class: "btn small", onclick: () => del(`/api/receivers/${id}`)
+    .then(() => { receiverCards.delete(id); pollReceivers(); }).catch(fail) }, "Forget");
+  const el = h("div", { class: "card" }, h("h3", {}, dot, name, mine, rename), meta, now, ctrl, send, forget);
   let playIcon = null, artKey = null;
   const thumb = h("div", { class: "thumb", title: "Open Now Playing", onclick: () => { setTarget(id); NowPlaying.open(); } });
   const info = h("div", { class: "info" });
@@ -1897,6 +2170,9 @@ function receiverCard(id) {
     if (!now.children.length) now.append(thumb, info);
     thumb.hidden = !t;
     ctrl.hidden = !rx.controllable;
+    volRow.hidden = rx.volume === false; // Safari on iPhone/iPad: only the device's buttons set it
+    mine.hidden = rx.id !== RX.id;
+    forget.hidden = !(rx.kind === "browser" && !rx.online);
     moveBtn.hidden = !t;
     const left = rx.sleep_at ? Math.max(1, Math.round((rx.sleep_at * 1000 - Date.now()) / 60000)) : 0;
     sleepInfo.textContent = left ? `Stops in ${plural(left, "minute")}` : "";
@@ -1915,6 +2191,11 @@ function receiverCard(id) {
 
 let receiverHolder = null;
 const receiverCards = new Map();
+// The last card: this browser can be a receiver too.
+const addSelfCard = h("button", { class: "card add-self", onclick: () => becomeReceiver().catch(fail) },
+  h("span", { class: "add-self-icon", html: ICON.cast }),
+  h("b", {}, "Use this device as a receiver"),
+  h("span", { class: "meta" }, "Play music from other devices through this one, for example a tablet plugged into a stereo."));
 function renderReceiverCards() {
   if (!receiverHolder) return;
   if (!Player.receivers.length) {
@@ -1922,7 +2203,8 @@ function renderReceiverCards() {
     receiverHolder.replaceChildren(h("div", { class: "empty", style: "grid-column:1/-1" },
       h("h2", {}, "No receivers yet"),
       h("p", {}, "Power on a Rio Receiver or Dell Digital Audio Receiver on the same network. It finds this server automatically, boots from it and shows up here."),
-      h("p", {}, "Chromecasts, Google Home and Nest speakers and speaker groups on the network show up here by themselves.")));
+      h("p", {}, "Chromecasts, Google Home and Nest speakers and speaker groups on the network show up here by themselves.")),
+    ...(RX.on ? [] : [addSelfCard]));
     return;
   }
   const els = Player.receivers.map((rx) => {
@@ -1931,6 +2213,7 @@ function renderReceiverCards() {
     card.update(rx);
     return card.el;
   });
+  if (!RX.on) els.push(addSelfCard);
   const kids = [...receiverHolder.children];
   if (kids.length !== els.length || els.some((el, i) => kids[i] !== el)) receiverHolder.replaceChildren(...els);
 }
@@ -1942,7 +2225,7 @@ async function viewReceivers() {
   renderReceiverCards();
   return [
     h("div", { class: "head-row" }, h("div", {}, h("h1", {}, "Receivers"),
-      h("div", { class: "subtle" }, "Rio and Dell receivers that have contacted this server, and the Chromecasts and Google speakers on your network"))),
+      h("div", { class: "subtle" }, "Rio and Dell receivers that have contacted this server, the Chromecasts and Google speakers on your network, and phones or tablets used as receivers"))),
     receiverHolder,
   ];
 }
@@ -2175,6 +2458,7 @@ function toggleSidebar(open) {
 $("#menu-btn").addEventListener("click", () => toggleSidebar());
 $("#scrim").addEventListener("click", () => toggleSidebar(false));
 
+showResume();
 route();
 pollStatus();
 pollReceivers();

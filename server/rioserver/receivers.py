@@ -190,6 +190,14 @@ class ReceiverRegistry:
     def _start_position(self, player_id: str, track: dict) -> int:
         return self.start_position(player_id, track) if self.start_position else 0
 
+    def remove(self, player_id: str) -> bool:
+        """Forget a player the server feeds (a browser that stopped being a receiver)."""
+        p = self._players.pop(player_id, None)
+        if p is None:
+            return False
+        p.close()
+        return True
+
     def players(self) -> list:
         """The players the server feeds track by track."""
         return list(self._players.values())

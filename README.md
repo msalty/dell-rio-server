@@ -28,6 +28,10 @@ RioServer NG runs in Docker. It provides:
   they show up on the receivers too. Plays are counted on every device, for
   Top 25 and Recently Played. An alarm clock wakes you with music that fades
   in.
+- **Phones and tablets as receivers.** An old phone or tablet (Fire tablets,
+  iPhones, Android) plugged into a stereo can be a receiver too: open the web
+  interface on it and choose "Use this device as a receiver". See
+  [Phones and tablets as receivers](#phones-and-tablets-as-receivers).
 - **Podcasts.** Subscribe to a podcast's feed and the server downloads new
   episodes, so the receivers (which can't fetch HTTPS themselves) can play
   them. Each episode carries on where you left it, on any device. See
@@ -204,6 +208,33 @@ Receivers take queue changes without interrupting the song that's playing
 from RioServer NG firmware 1.6 on. A receiver gets new firmware when it
 powers on, so power-cycle your receivers once after updating the server.
 With older firmware the queue is shown but can't be changed.
+
+## Phones and tablets as receivers
+
+An old phone or tablet plugged into a stereo (by cable or Bluetooth) can play
+music like the receivers and speakers do. Open the web interface on it, go to
+**Receivers** and choose **Use this device as a receiver** (the last card).
+Give it a name ("Living Room") and tap **Start**. It then shows up on every
+other device under **Receivers** and **Play on**, with Up Next, moving
+playback, the sleep timer, alarms and podcast resume. Its own screen shows
+Now Playing as a display; the header ("This device · Living Room") has its
+menu, including **Stop being a receiver**.
+
+- **Keep the page open.** Browsers pause pages that aren't on screen, so
+  leave it showing, plugged in. The screen stays on while it's a receiver
+  (on iOS from 16.4). On an iPhone or iPad, Guided Access keeps it on this
+  page.
+- **One tap after a restart.** Browsers only play sound after a tap. If the
+  page reloads, it shows the receiver's name: tap once and it carries on
+  where it was.
+- **Volume:** on iPhone and iPad, only the device's buttons (or the stereo)
+  set it; Safari doesn't let pages change it. On Android and Fire tablets it
+  can be set from other devices like any receiver. An alarm's fade-in needs
+  that, so on an iPhone the alarm starts at the device's volume.
+- Songs follow one another without a gap: the next one is loaded while the
+  current one plays.
+- A browser that stopped being a receiver shows as offline; **Forget** on its
+  card removes it.
 
 ## Podcasts
 
