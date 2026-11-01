@@ -246,8 +246,15 @@ async def test_audio_dropouts_buffer_and_cpu_are_logged(client, library, caplog)
     assert (f'audio dropped out 2 times, 180 ms in all during "{t["title"]}" ({t["bitrate"]} kbps) '
             "(CPU 87% busy, longest hold-up 140 ms, audio buffer 310 ms)") in caplog.text
     caplog.clear()
+    # ~90% with the device kept full is healthy; 95% and up, sustained, isn't
+    await client.get(base + "&gaps=0&gapms=0&abuf=310&cpu=91")
+    await client.get(base + "&gaps=0&gapms=0&abuf=310&cpu=96")  # e.g. a track's first seconds
+    assert caplog.text == ""
     await client.get(base + "&gaps=0&gapms=0&abuf=310&cpu=95")
     assert "CPU 95% busy while playing" in caplog.text
+    caplog.clear()
+    await client.get(base + "&gaps=0&gapms=0&abuf=310&cpu=97")
+    assert caplog.text == ""  # once per track
     caplog.clear()
     await client.get(base + "&gaps=1&gapms=30&abuf=0&cpu=97&dec=81&disp=7&net=1&stall=50")
     assert "(CPU 97% busy: decoding 81%, display 7%, network 1%, longest hold-up 50 ms, audio buffer 310 ms)" \

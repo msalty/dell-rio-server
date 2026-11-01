@@ -157,7 +157,8 @@ first line is `RNG 1`, followed by tab-separated records.
   in the audio device; `dec`, `disp` and `net` are the shares of playing
   time spent decoding MP3, drawing the display and reading the network (the
   rest of `cpu` is the kernel and drivers). The server logs dropouts with
-  that context, and warns when the CPU is above 90%.
+  that context, and warns (once per track) when the CPU stays at 95% or
+  more.
 
 The firmware listens on UDP port 21076 (or another free port, reported as
 `wake`). When the web interface queues a command, the server sends a datagram

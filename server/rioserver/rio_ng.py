@@ -48,8 +48,12 @@ QUEUE_LIMIT = 10000
 # longer hold-up is probably an audible skip.
 STALL_WARN_MS = 250
 # CPU use while playing (NG firmware 1.3+) that leaves too little headroom:
-# a few demanding frames in a row and the audio device runs dry.
-CPU_WARN_PERCENT = 90
+# a few demanding frames in a row and the audio device runs dry. On a real
+# receiver 97-98% meant dropouts, while ~90% with the audio device kept full
+# plays cleanly. A track's first seconds run high while the device fills,
+# so it takes this many polls in a row, and it is said once per track.
+CPU_WARN_PERCENT = 95
+CPU_WARN_POLLS = 2
 
 
 def _int(q, key: str) -> int | None:
@@ -347,7 +351,7 @@ class NGProtocol:
                             "once" if under == 1 else f"{under} times", playing, under_ms / 1000)
             else:
                 log.warning("%s: waited another %.1f s for music data%s", r.name, under_ms / 1000, playing)
-        _report_audio(r, q, playing)
+        _report_audio(r, q, playing, t["id"] if t else None)
         lines = [f"lib\t{self.lib.version}"]
         while r.commands:
             cmd = r.commands.popleft()
@@ -359,7 +363,7 @@ class NGProtocol:
         return self._reply(lines)
 
 
-def _report_audio(r, q, playing: str) -> None:
+def _report_audio(r, q, playing: str, track_id: int | None) -> None:
     """Log what NG firmware 1.3+ says about its audio output: dropouts
     (the audio device ran out of sound while playback should have been
     continuous, i.e. an audible skip), how much sound the device holds, and
@@ -385,7 +389,11 @@ def _report_audio(r, q, playing: str) -> None:
     if gaps:
         log.warning("%s: audio dropped out %s, %d ms in all%s%s", r.name,
                     "once" if gaps == 1 else f"{gaps} times", gap_ms, playing, context)
-    elif cpu is not None and cpu >= CPU_WARN_PERCENT:
+    if cpu is None or cpu < 0:
+        return  # not playing
+    r.cpu_high_polls = r.cpu_high_polls + 1 if cpu >= CPU_WARN_PERCENT else 0
+    if not gaps and r.cpu_high_polls >= CPU_WARN_POLLS and r.cpu_warned_track != track_id:
+        r.cpu_warned_track = track_id
         log.warning("%s: %s while playing%s; little headroom left", r.name, busy, playing)
 
 

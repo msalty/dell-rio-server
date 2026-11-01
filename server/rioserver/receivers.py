@@ -49,6 +49,8 @@ class Receiver:
     label: str = ""  # name given in the web interface
     sleep_at: float | None = None  # sleep timer: when playback stops
     audio_buffer_ms: int = 0  # how much sound its audio device holds (reported by NG firmware 1.3+)
+    cpu_high_polls: int = 0  # status polls in a row with the CPU above CPU_WARN_PERCENT
+    cpu_warned_track: int | None = None  # the track it was last warned about
 
     @property
     def id(self) -> str:
