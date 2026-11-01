@@ -445,10 +445,10 @@ def test_audio_dropouts_are_reported(tmp_path):
             rx.stop()
 
 
-def test_now_playing_scrolls_a_long_title_once(tmp_path):
-    """Each step of a scrolling title redraws the whole display, which costs
-    CPU that decoding needs; Now Playing scrolls a long title once and then
-    rests at its start."""
+def test_now_playing_keeps_scrolling_a_long_title(tmp_path):
+    """Now Playing scrolls a long title for as long as it plays. Each step
+    redraws only the title line (a full redraw costs CPU that decoding a
+    320 kbps track needs), so the lines below must stay intact."""
     import json
     import urllib.request
 
@@ -478,28 +478,25 @@ def test_now_playing_scrolls_a_long_title_once(tmp_path):
                 time.sleep(0.2)
             time.sleep(0.5)
 
-            def title_rows():  # the title line of Now Playing
-                return [tuple(row) for row in rx.pixels()[12:29]]
+            def rows(a, b):
+                return [tuple(row) for row in rx.pixels()[a:b]]
 
-            at_rest = title_rows()
-            assert lit_pixels(at_rest) > 50, rx.console()
-            moved = False
-            deadline = time.time() + 6
-            while not moved and time.time() < deadline:
-                time.sleep(0.4)
-                moved = title_rows() != at_rest
-            assert moved, "the long title never scrolled"
-            # after one pass it comes back to the start and stays there
-            deadline = time.time() + 30
-            settled = False
-            while not settled and time.time() < deadline:
+            at_start = rows(12, 29)  # the title line, before it starts to move
+            below = rows(29, 52)     # artist and album
+            assert lit_pixels(at_start) > 50 and lit_pixels(below) > 50, rx.console()
+            # One pass of this title takes about 9 s; watch for 25, so it has to
+            # start over at least once rather than settle.
+            seen, moving_at = set(), []
+            began = time.time()
+            while time.time() - began < 25:
                 time.sleep(0.5)
-                if title_rows() == at_rest:
-                    samples = []
-                    for _ in range(6):
-                        time.sleep(0.5)
-                        samples.append(title_rows())
-                    settled = all(x == at_rest for x in samples)
-            assert settled, "the title kept scrolling"
+                title = rows(12, 29)
+                assert lit_pixels(title) > 50, "the title line was cleared and not redrawn"
+                assert rows(29, 52) == below, "a scroll step disturbed the artist and album lines"
+                seen.add(tuple(title))
+                if title != at_start:
+                    moving_at.append(time.time() - began)
+            assert len(seen) > 10, "the title barely moved"
+            assert moving_at and moving_at[-1] > 20, "the title stopped scrolling"
         finally:
             rx.stop()

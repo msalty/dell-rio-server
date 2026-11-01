@@ -288,8 +288,10 @@ the firmware also logs to the receiver's serial console.
 - Protocol knowledge comes from **JReceiver** (Reed Esau and contributors,
   BSD licence), **RioPlay** (David Flowerday, GPL) and the empeg/Rio hacker
   community.
-- The receiver firmware links **libmad** (Underbit Technologies, GPL), so it
-  is distributed under the GPL v2 or later; see
+- The receiver firmware links **libmad** (Underbit Technologies, GPL), in
+  the version maintained by **Rockbox** with hand-written ARM assembly
+  (Rockbox contributors, GPL), so it is distributed under the GPL v2 or
+  later; see
   [`firmware/COPYING`](firmware/COPYING). Its fonts are rendered from
   **DejaVu Sans**; see [`firmware/LICENSE.fonts`](firmware/LICENSE.fonts).
 - The kernel and HomePNA driver in the default firmware image come from

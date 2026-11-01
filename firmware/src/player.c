@@ -50,14 +50,43 @@ static void set_status(const char *msg)
     P.status_until = time_ms() + 4000;
 }
 
+#ifdef MAD_ROCKBOX
+/* Rockbox's libmad leaves its work buffers to the caller instead of
+ * allocating them itself (and freeing them in *_finish()). As in Rockbox's
+ * own player on a single-core CPU, the previous frame's subband samples share
+ * the current frame's buffer. */
+static unsigned char mad_main_data[MAD_BUFFER_MDLEN];
+static mad_fixed_t mad_overlap[2][32][18];
+static mad_fixed_t mad_sbsample[2][36][32];
+#endif
+
+static void decoder_init(void)
+{
+#ifdef MAD_ROCKBOX
+    mst.main_data = &mad_main_data;
+    mfr.overlap = &mad_overlap;
+    mfr.sbsample = mfr.sbsample_prev = &mad_sbsample;
+#endif
+    mad_stream_init(&mst);
+    mad_frame_init(&mfr);
+    mad_synth_init(&msy);
+}
+
+static void decoder_finish(void)
+{
+    mad_synth_finish(&msy);
+#ifndef MAD_ROCKBOX
+    mad_frame_finish(&mfr);
+    mad_stream_finish(&mst);
+#endif
+}
+
 void player_init(void)
 {
     memset(&P, 0, sizeof(P));
     P.volume = 50;
     inbuf = malloc(INBUF_SIZE + MAD_BUFFER_GUARD);
-    mad_stream_init(&mst);
-    mad_frame_init(&mfr);
-    mad_synth_init(&msy);
+    decoder_init();
     audio_set_volume(P.volume);
 }
 
@@ -80,12 +109,8 @@ static void reset_decoder(void)
 {
     end_starve();
     audio_idle(); /* a new stream: a pause before it is expected */
-    mad_synth_finish(&msy);
-    mad_frame_finish(&mfr);
-    mad_stream_finish(&mst);
-    mad_stream_init(&mst);
-    mad_frame_init(&mfr);
-    mad_synth_init(&msy);
+    decoder_finish();
+    decoder_init();
     in_start = in_end = 0;
     eof = guard_added = 0;
     rebuffer = 1;

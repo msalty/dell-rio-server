@@ -17,7 +17,7 @@
 #include "player.h"
 #include "sys.h"
 
-#define VERSION "1.4"
+#define VERSION "1.5"
 #define WIN 24
 #define ROWS 4
 #define ROW_H 13
@@ -231,11 +231,10 @@ static void push_level(const char *node, const char *title, int local)
 
 /* ---- rendering --------------------------------------------------------- */
 
-/* Now Playing scrolls a long title this many times, then rests at its start
- * until a key is pressed or the track changes. Each frame of scrolling is a
- * full redraw, and at ~8 a second they cost CPU that decoding a 320 kbps
- * track needs (a long title takes ~20 s to scroll past). */
-#define NOW_MARQUEE_PASSES 1
+/* How many times Now Playing scrolls a long title before resting at its
+ * start until a key is pressed or the track changes; 0 scrolls for as long as
+ * it plays. Each step redraws only the title line (render_title_step()). */
+#define NOW_MARQUEE_PASSES 0
 
 /* How far text too wide for `avail` has scrolled. With passes > 0 it stops
  * at the start after that many passes; *moving says whether it still moves. */
@@ -279,6 +278,7 @@ static void draw_title_bar(const char *title)
 }
 
 static int animating;
+static int title_scrolling; /* Now Playing's title is mid-scroll: a step needs only that line */
 
 static void render_menu(void)
 {
@@ -376,7 +376,7 @@ static void render_now(void)
     int off = marquee_scroll(&font_large, title, GFX_W - 4, NOW_MARQUEE_PASSES, &moving);
     if (needs_marquee(&font_large, title, GFX_W - 4)) {
         if (moving)
-            animating = 1;
+            animating = title_scrolling = 1;
         gfx_clip(2, 12, GFX_W - 2, 29);
         gfx_text(&font_large, 2 - off, 12, title, 3, INK_NORMAL);
         gfx_noclip();
@@ -413,9 +413,14 @@ static void render_now(void)
         gfx_fill(bx + 1, 58, 2, 3, 2);
 }
 
+static int status_showing(void)
+{
+    return P.status[0] && (int32_t)(P.status_until - time_ms()) > 0;
+}
+
 static void render_status(void)
 {
-    if (!P.status[0] || (int32_t)(P.status_until - time_ms()) <= 0)
+    if (!status_showing())
         return;
     int w = gfx_text_width(&font_medium, P.status) + 10;
     if (w > GFX_W - 4)
@@ -434,7 +439,7 @@ static uint32_t display_us; /* time spent drawing while playing, since the last 
 static void render(void)
 {
     uint32_t began = time_us();
-    animating = 0;
+    animating = title_scrolling = 0;
     gfx_clear();
     gfx_noclip();
     if (screen == SCR_NOW)
@@ -445,6 +450,26 @@ static void render(void)
     display_push();
     last_render = time_ms();
     dirty = 0;
+    if (P.state == P_PLAYING)
+        display_us += time_us() - began;
+}
+
+/* One step of Now Playing's scrolling title. Only the title line moves, so
+ * only it is redrawn: about a third of the work of a full redraw, which
+ * matters at ~8 steps a second while a 320 kbps track decodes. */
+static void render_title_step(void)
+{
+    uint32_t began = time_us();
+    const char *title = P.cur.title[0] ? P.cur.title : "Unknown";
+    int moving;
+    int off = marquee_scroll(&font_large, title, GFX_W - 4, NOW_MARQUEE_PASSES, &moving);
+    animating = title_scrolling = moving;
+    gfx_fill(0, 12, GFX_W, 17, 0);
+    gfx_clip(2, 12, GFX_W - 2, 29);
+    gfx_text(&font_large, 2 - off, 12, title, 3, INK_NORMAL);
+    gfx_noclip();
+    display_push();
+    last_render = time_ms();
     if (P.state == P_PLAYING)
         display_us += time_us() - began;
 }
@@ -857,10 +882,13 @@ void ui_tick(uint32_t now)
         marquee_start = now;
         dirty = 1;
     }
-    if (animating && now - last_render >= 120)
-        dirty = 1;
+    int step = animating && now - last_render >= 120;
     if ((int32_t)(vol_until - now) <= 0 && vol_until && now - vol_until < 200)
         dirty = 1;
     if (dirty)
+        render();
+    else if (step && title_scrolling && screen == SCR_NOW && P.have_track && !status_showing())
+        render_title_step();
+    else if (step)
         render();
 }
