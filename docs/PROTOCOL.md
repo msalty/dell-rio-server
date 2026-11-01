@@ -136,10 +136,14 @@ first line is `RNG 1`, followed by tab-separated records.
   `i <kind> <ref> <label> <detail>` per item. Kind `M` is a submenu, `T` a
   track and `S` "shuffle this node".
 - `GET /ng/queue/<node>?first=&shuffle=` returns `total`, then one track fid
-  per line.
+  per line. The server remembers the list it hands each receiver: that is
+  the receiver's play queue, which the web interface shows as Up Next.
 - `GET /ng/track/<fid>` returns key/value lines: title, artist, album, track,
-  tracks, dur, kbps, size and so on.
-- `GET /ng/poll?mac=&st=&id=&pos=&vol=&qi=&qn=&wake=&stall=&under=&underms=&gaps=&gapms=&abuf=&cpu=&dec=&disp=&net=` reports the
+  tracks, dur, kbps, size and so on. For a podcast episode the receiver is
+  starting afresh, it also returns `start <ms>`, where the episode was left
+  on any device; firmware 1.6 starts playing there. Older firmware is sent a
+  `seek` command instead.
+- `GET /ng/poll?mac=&st=&id=&pos=&vol=&qi=&qn=&shuf=&rep=&ver=&wake=&stall=&under=&underms=&gaps=&gapms=&abuf=&cpu=&dec=&disp=&net=` reports the
   receiver's state every 3 seconds. The reply carries `lib <version>` and any
   `cmd …` lines queued by the web interface. The firmware runs the poll
   alongside playback, so a slow reply never holds up the audio. `stall` is
@@ -158,7 +162,26 @@ first line is `RNG 1`, followed by tab-separated records.
   time spent decoding MP3, drawing the display and reading the network (the
   rest of `cpu` is the kernel and drivers). The server logs dropouts with
   that context, and warns (once per track) when the CPU stays at 95% or
-  more.
+  more. `qi` and `qn` (position in the queue and its length) keep the
+  server's copy of the queue in step; `id` and `pos` also feed the play
+  history and podcast positions.
+
+Commands (`cmd <verb> <args…>`, tab-separated):
+
+| Command | |
+|---|---|
+| `play <node> <first> <shuffle>` | fetch `/ng/queue/<node>` and play it |
+| `queue <node> <index> <start> <shuffle>` | (1.6+) replace the queue with `/ng/queue/<node>` and move to `index`, without interrupting the track that is playing; with `start` 1, play `index` now |
+| `pause`, `resume`, `toggle`, `stop`, `next`, `prev` | transport |
+| `vol <0-100>`, `seek <ms>` | volume, position |
+| `repeat <off\|all\|one>` | (1.6+) repeat mode |
+| `msg <text>` | show a message on the display |
+
+When the web interface changes a queue (Play next, Add to Up Next, reorder,
+remove, jump), the server stores the new list as a `q:` node and sends
+`queue`. When shuffle is switched on the receiver (the Random key), its
+firmware reorders its own copy; the server sees `shuf` change in the next
+poll and sends a `queue` with an order it knows, so Up Next stays right.
 
 The firmware listens on UDP port 21076 (or another free port, reported as
 `wake`). When the web interface queues a command, the server sends a datagram
@@ -171,4 +194,6 @@ collected yet.
 
 Nodes are paths that narrow step by step: `artists`, `ar:12`, `ar:12/al:40`,
 `ar:12/all`, `ge:3/ar:12/al:40`, `pl:2`, and `q:7` for a queue created by the
-web interface.
+web interface. `podcasts` lists the podcasts and `pc:4` one podcast's
+downloaded episodes (picking an episode plays just that episode). `top25`
+and `played` are the Top 25 Most Played and Recently Played lists.
