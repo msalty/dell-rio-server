@@ -78,6 +78,7 @@ static void end_starve(void)
 static void reset_decoder(void)
 {
     end_starve();
+    audio_idle(); /* a new stream: a pause before it is expected */
     mad_synth_finish(&msy);
     mad_frame_finish(&mfr);
     mad_stream_finish(&mst);
@@ -251,6 +252,7 @@ int player_play_node(const char *node, int first, int shuffle)
 void player_stop(void)
 {
     end_starve();
+    audio_idle();
     close_stream();
     P.state = P_STOPPED;
 }
@@ -258,6 +260,7 @@ void player_stop(void)
 void player_pause(void)
 {
     end_starve(); /* a pause isn't waiting for data */
+    audio_idle();
     if (P.state == P_PLAYING || P.state == P_BUFFERING)
         P.state = P_PAUSED;
 }
@@ -517,6 +520,7 @@ int player_service(int *busy)
                 starved_at = time_ms();
                 dlog("player: ran out of data (%d bytes buffered)\n", in_end - in_start);
             }
+            audio_idle(); /* reported as a run-out, not a dropout */
             P.state = P_BUFFERING;
             threshold = REBUFFER;
             rebuffer = 1;

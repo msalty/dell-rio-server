@@ -231,6 +231,28 @@ async def test_receiver_running_out_of_music_is_logged(client, library, caplog):
     assert "waited another 0.8 s for music data" in caplog.text
 
 
+async def test_audio_dropouts_buffer_and_cpu_are_logged(client, library, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="rioserver.rio_ng")
+    t = library.tracks()[0]
+    base = f"/ng/poll?mac=00:90:4b:00:00:01&st=play&id={ids.track_fid(t['id']):x}"
+    await client.get(base + "&gaps=0&gapms=0&abuf=310&cpu=40&stall=30")
+    assert "its audio device holds 310 ms of sound" in caplog.text
+    assert "dropped out" not in caplog.text and "headroom" not in caplog.text
+    caplog.clear()
+    await client.get(base + "&gaps=2&gapms=180&abuf=310&cpu=87&stall=140")
+    assert "holds" not in caplog.text  # said once, until it changes
+    assert (f'audio dropped out 2 times, 180 ms in all during "{t["title"]}" ({t["bitrate"]} kbps) '
+            "(CPU 87% busy, longest hold-up 140 ms, audio buffer 310 ms)") in caplog.text
+    caplog.clear()
+    await client.get(base + "&gaps=0&gapms=0&abuf=310&cpu=95")
+    assert "CPU 95% busy while playing" in caplog.text
+    caplog.clear()
+    await client.get(base + "&gaps=0&gapms=0&abuf=0&cpu=-1")  # not playing, nothing measured
+    assert caplog.text == ""
+
+
 async def test_api_art_from_folder_jpg(client, library):
     abbey = library.albums_by_title("Abbey Road")[0]
     r = await client.get(f"/api/art/album/{abbey['id']}")

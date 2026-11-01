@@ -48,6 +48,7 @@ class Receiver:
     wake_port: int = 0  # UDP port where the firmware listens for "poll now"
     label: str = ""  # name given in the web interface
     sleep_at: float | None = None  # sleep timer: when playback stops
+    audio_buffer_ms: int = 0  # how much sound its audio device holds (reported by NG firmware 1.3+)
 
     @property
     def id(self) -> str:

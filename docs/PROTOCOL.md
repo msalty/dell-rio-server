@@ -139,7 +139,7 @@ first line is `RNG 1`, followed by tab-separated records.
   per line.
 - `GET /ng/track/<fid>` returns key/value lines: title, artist, album, track,
   tracks, dur, kbps, size and so on.
-- `GET /ng/poll?mac=&st=&id=&pos=&vol=&qi=&qn=&wake=&stall=&under=&underms=` reports the
+- `GET /ng/poll?mac=&st=&id=&pos=&vol=&qi=&qn=&wake=&stall=&under=&underms=&gaps=&gapms=&abuf=&cpu=` reports the
   receiver's state every 3 seconds. The reply carries `lib <version>` and any
   `cmd …` lines queued by the web interface. The firmware runs the poll
   alongside playback, so a slow reply never holds up the audio. `stall` is
@@ -149,6 +149,13 @@ first line is `RNG 1`, followed by tab-separated records.
   (data didn't arrive fast enough) since the previous poll, and `underms` is
   how long playback waited for data; a wait still going on is counted up to
   the poll and the rest goes in the next one. The server logs both.
+  `gaps` and `gapms` count the times the audio device ran out of sound while
+  playback should have been continuous (an audible dropout) and their total
+  length. `abuf` is how much sound the device holds (ms), measured while it
+  first fills; `cpu` is how busy the CPU was while playing (percent, -1 when
+  not playing), from the time the player spent waiting for input or for room
+  in the audio device. The server logs dropouts with that context, and warns
+  when the CPU is above 90%.
 
 The firmware listens on UDP port 21076 (or another free port, reported as
 `wake`). When the web interface queues a command, the server sends a datagram

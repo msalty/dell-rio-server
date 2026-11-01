@@ -17,7 +17,7 @@
 #include "player.h"
 #include "sys.h"
 
-#define VERSION "1.2"
+#define VERSION "1.3"
 #define WIN 24
 #define ROWS 4
 #define ROW_H 13
@@ -721,24 +721,34 @@ static void run_command(char **f, int nf)
 static struct http_async poll_req = {.fd = -1};
 static char poll_buf[2048];
 
-int ui_poll_start(int timeout_ms, unsigned stall_ms)
+int ui_poll_start(int timeout_ms, unsigned stall_ms, uint32_t play_ms, uint32_t wait_ms)
 {
     static const char *const states[] = {"stop", "buffer", "play", "pause"};
     static const char *const repeats[] = {"off", "all", "one"};
-    char path[256];
+    char path[320];
     unsigned under;
     uint32_t under_ms;
     player_underruns(&under, &under_ms);
+    struct audio_stats au;
+    audio_stats(&au);
+    /* CPU busy while playing, in percent (-1 when not playing) */
+    int cpu = -1;
+    if (play_ms >= 500) {
+        uint32_t idle = wait_ms + au.blocked_ms;
+        cpu = idle >= play_ms ? 0 : (int)((play_ms - idle) * 100 / play_ms);
+    }
     snprintf(path, sizeof(path),
              "/ng/poll?mac=%s&st=%s&id=%lx&pos=%lu&vol=%d&qi=%d&qn=%d&shuf=%d&rep=%s&wake=%d&stall=%u"
-             "&under=%u&underms=%lu&ver=" VERSION,
+             "&under=%u&underms=%lu&gaps=%u&gapms=%lu&abuf=%lu&cpu=%d&ver=" VERSION,
              net_mac(), standby ? "standby" : states[P.state],
              (unsigned long)(P.have_track ? P.cur.fid : 0), (unsigned long)player_position_ms(),
              P.volume, P.qi, P.qlen, P.shuffle, repeats[P.repeat], wake_port, stall_ms,
-             under, (unsigned long)under_ms);
+             under, (unsigned long)under_ms, au.gaps, (unsigned long)au.gap_ms, (unsigned long)au.buffer_ms, cpu);
     int r = http_async_start(&poll_req, path, poll_buf, sizeof(poll_buf), timeout_ms);
-    if (r == 0)
+    if (r == 0) {
         player_underruns_reported();
+        audio_stats_reported();
+    }
     return r;
 }
 
