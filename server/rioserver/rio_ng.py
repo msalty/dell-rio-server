@@ -17,7 +17,7 @@ tab-separated records.
   GET /ng/track/<fid>
       key/value lines: title, artist, album, track, tracks, dur, kbps, ...
   GET /ng/poll?mac=..&st=..&id=..&pos=..&vol=..&qi=..&qn=..&wake=<port>&stall=<ms>&under=<n>&underms=<ms>
-                &gaps=<n>&gapms=<ms>&abuf=<ms>&cpu=<percent>
+                &gaps=<n>&gapms=<ms>&abuf=<ms>&cpu=<percent>&dec=<percent>&disp=<percent>&net=<percent>
       reports playback state; the reply carries queued commands from the web
       UI ("cmd <verb> [args...]") and the library version ("lib <n>"). When a
       command is queued the server sends a UDP datagram to <port> on the
@@ -369,9 +369,14 @@ def _report_audio(r, q, playing: str) -> None:
         r.audio_buffer_ms = abuf
         log.info("%s: its audio device holds %d ms of sound", r.name, abuf)
     gaps, gap_ms = max(0, _int(q, "gaps") or 0), max(0, _int(q, "gapms") or 0)
+    # where the CPU time went (firmware 1.4+): the rest is the kernel, the
+    # audio and network drivers, and everything else
+    shares = [f"{label} {v}%" for label, key in (("decoding", "dec"), ("display", "disp"), ("network", "net"))
+              if (v := _int(q, key)) is not None and v >= 0]
+    busy = f"CPU {cpu}% busy" + (f": {', '.join(shares)}" if shares else "") if cpu is not None and cpu >= 0 else ""
     context = []
-    if cpu is not None and cpu >= 0:
-        context.append(f"CPU {cpu}% busy")
+    if busy:
+        context.append(busy)
     if stall:
         context.append(f"longest hold-up {stall} ms")
     if r.audio_buffer_ms:
@@ -381,7 +386,7 @@ def _report_audio(r, q, playing: str) -> None:
         log.warning("%s: audio dropped out %s, %d ms in all%s%s", r.name,
                     "once" if gaps == 1 else f"{gaps} times", gap_ms, playing, context)
     elif cpu is not None and cpu >= CPU_WARN_PERCENT:
-        log.warning("%s: CPU %d%% busy while playing%s; little headroom left", r.name, cpu, playing)
+        log.warning("%s: %s while playing%s; little headroom left", r.name, busy, playing)
 
 
 def _clean(s) -> str:

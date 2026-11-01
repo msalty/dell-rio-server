@@ -100,6 +100,7 @@ void sys_reboot(void);
 void sys_exit(int code) __attribute__((noreturn));
 long sys_socketcall(int call, long *args);
 uint32_t time_ms(void); /* monotonic-ish milliseconds */
+uint32_t time_us(void); /* microseconds, wrapping every 71 minutes: for measuring short spans */
 long time_sec(void);
 
 /* environment (for the qemu simulator) */

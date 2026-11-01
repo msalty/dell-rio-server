@@ -249,6 +249,10 @@ async def test_audio_dropouts_buffer_and_cpu_are_logged(client, library, caplog)
     await client.get(base + "&gaps=0&gapms=0&abuf=310&cpu=95")
     assert "CPU 95% busy while playing" in caplog.text
     caplog.clear()
+    await client.get(base + "&gaps=1&gapms=30&abuf=0&cpu=97&dec=81&disp=7&net=1&stall=50")
+    assert "(CPU 97% busy: decoding 81%, display 7%, network 1%, longest hold-up 50 ms, audio buffer 310 ms)" \
+        in caplog.text
+    caplog.clear()
     await client.get(base + "&gaps=0&gapms=0&abuf=0&cpu=-1")  # not playing, nothing measured
     assert caplog.text == ""
 

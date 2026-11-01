@@ -32,6 +32,7 @@ static int starved; /* waiting for data after running dry mid-track */
 static uint32_t starved_at;
 static unsigned underruns;   /* since the last report to the server */
 static uint32_t underrun_ms;
+static uint32_t decode_us, net_us; /* CPU time, since the last report */
 
 static struct mad_stream mst;
 static struct mad_frame mfr;
@@ -348,6 +349,13 @@ void player_underruns(unsigned *count, uint32_t *ms)
     *ms = underrun_ms + (starved ? time_ms() - starved_at : 0);
 }
 
+void player_cpu(uint32_t *dec, uint32_t *net)
+{
+    *dec = decode_us;
+    *net = net_us;
+    decode_us = net_us = 0;
+}
+
 void player_underruns_reported(void)
 {
     underruns = 0;
@@ -373,7 +381,9 @@ static inline int16_t scale(mad_fixed_t s)
     return (int16_t)(s >> (MAD_F_FRACBITS + 1 - 16));
 }
 
-static void output_pcm(void)
+/* Convert the decoded frame to 16-bit 44.1kHz stereo in pcm_out; returns
+ * the number of frames. */
+static int output_pcm(void)
 {
     struct mad_pcm *pcm = &msy.pcm;
     int n = pcm->length;
@@ -411,7 +421,7 @@ static void output_pcm(void)
         rs_prev[1] = scale(r[n - 1]);
     }
     samples_out += (uint32_t)frames;
-    audio_play(pcm_out, frames);
+    return frames;
 }
 
 static void fill_from_network(int *busy)
@@ -431,7 +441,9 @@ static void fill_from_network(int *busy)
     int space = INBUF_SIZE - in_end;
     if (space <= 0)
         return;
+    uint32_t began = time_us();
     int n = net_recv(fd, inbuf + in_end, space);
+    net_us += time_us() - began;
     if (n > 0) {
         in_end += n;
         received += n;
@@ -497,10 +509,17 @@ int player_service(int *busy)
         rebuffer = 0;
     }
     for (int attempts = 0; attempts < 8; attempts++) {
-        if (mad_frame_decode(&mfr, &mst) == 0) {
+        uint32_t began = time_us();
+        int decoded = mad_frame_decode(&mfr, &mst) == 0;
+        int frames = 0;
+        if (decoded) {
             in_start = (int)(mst.next_frame - inbuf);
             mad_synth_frame(&msy, &mfr);
-            output_pcm();
+            frames = output_pcm();
+        }
+        decode_us += time_us() - began;
+        if (decoded) {
+            audio_play(pcm_out, frames); /* may wait for room: not decoding time */
             fail_count = 0;
             *busy = 1;
             return fd;

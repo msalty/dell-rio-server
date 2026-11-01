@@ -52,6 +52,9 @@ uint32_t player_position_ms(void);
 void player_underruns(unsigned *count, uint32_t *ms);
 /* The figures above have been reported; start counting again. */
 void player_underruns_reported(void);
+/* Time spent decoding MP3 (to PCM, before it goes to the audio device) and
+ * reading from the network, in microseconds, since the last call. */
+void player_cpu(uint32_t *decode_us, uint32_t *net_us);
 
 /* Do a slice of playback work. Returns the socket the player is waiting on
  * (to include in select), -1 if none, and sets *busy when it made progress. */

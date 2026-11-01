@@ -422,6 +422,8 @@ def test_audio_dropouts_are_reported(tmp_path):
             buffers = {int(f["abuf"]) for f in steady if f["abuf"] != "0"}
             assert buffers and all(200 <= b <= 400 for b in buffers), steady
             assert any(0 <= int(f["cpu"]) <= 100 for f in steady), steady
+            # where the time went: decoding, the display, the network
+            assert any(all(0 <= int(f[k]) <= 100 for k in ("dec", "disp", "net")) for f in steady), steady
 
             # Now Playing > back to the menus > down past "Now Playing" > open
             # "Music": its menu takes 0.8 s to arrive, and playback waits for it.
@@ -439,5 +441,65 @@ def test_audio_dropouts_are_reported(tmp_path):
             # 0.8 s held up, less the ~0.3 s the device had in hand
             assert 250 <= sum(int(f["gapms"]) for f in reported) <= 900, reported
             assert "audio: dropout" in log
+        finally:
+            rx.stop()
+
+
+def test_now_playing_scrolls_a_long_title_once(tmp_path):
+    """Each step of a scrolling title redraws the whole display, which costs
+    CPU that decoding needs; Now Playing scrolls a long title once and then
+    rests at its start."""
+    import json
+    import urllib.request
+
+    from simulate import Receiver
+
+    music = tmp_path / "music" / "Artist" / "Album"
+    music.mkdir(parents=True)
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "sine=frequency=440:duration=40", "-ac", "2", "-ar", "44100",
+                    "-codec:a", "libmp3lame", "-b:a", "128k", "-metadata", "title=A Title Long Enough To Scroll",
+                    "-metadata", "artist=Artist", "-metadata", "album=Album", str(music / "01.mp3")],
+                   check=True)
+    with run_server(tmp_path / "music", tmp_path / "data") as server:
+        rx = Receiver(str(FIRMWARE), server, workdir=str(tmp_path / "rx"))
+        try:
+            api = f"http://{server}/api"
+            deadline = time.time() + 10
+            while not json.load(urllib.request.urlopen(f"{api}/receivers")) and time.time() < deadline:
+                time.sleep(0.2)
+            rid = json.load(urllib.request.urlopen(f"{api}/receivers"))[0]["id"]
+            album = json.load(urllib.request.urlopen(f"{api}/albums"))[0]["id"]
+            req = urllib.request.Request(f"{api}/receivers/{rid}/play", data=json.dumps({"album_id": album}).encode(),
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req).read()
+            deadline = time.time() + 10
+            while "playing" not in rx.console() and time.time() < deadline:
+                time.sleep(0.2)
+            time.sleep(0.5)
+
+            def title_rows():  # the title line of Now Playing
+                return [tuple(row) for row in rx.pixels()[12:29]]
+
+            at_rest = title_rows()
+            assert lit_pixels(at_rest) > 50, rx.console()
+            moved = False
+            deadline = time.time() + 6
+            while not moved and time.time() < deadline:
+                time.sleep(0.4)
+                moved = title_rows() != at_rest
+            assert moved, "the long title never scrolled"
+            # after one pass it comes back to the start and stays there
+            deadline = time.time() + 30
+            settled = False
+            while not settled and time.time() < deadline:
+                time.sleep(0.5)
+                if title_rows() == at_rest:
+                    samples = []
+                    for _ in range(6):
+                        time.sleep(0.5)
+                        samples.append(title_rows())
+                    settled = all(x == at_rest for x in samples)
+            assert settled, "the title kept scrolling"
         finally:
             rx.stop()

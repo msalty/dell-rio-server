@@ -17,7 +17,7 @@
 #include "player.h"
 #include "sys.h"
 
-#define VERSION "1.3"
+#define VERSION "1.4"
 #define WIN 24
 #define ROWS 4
 #define ROW_H 13
@@ -231,19 +231,36 @@ static void push_level(const char *node, const char *title, int local)
 
 /* ---- rendering --------------------------------------------------------- */
 
-static int marquee_offset(const struct font *f, const char *s, int avail)
+/* Now Playing scrolls a long title this many times, then rests at its start
+ * until a key is pressed or the track changes. Each frame of scrolling is a
+ * full redraw, and at ~8 a second they cost CPU that decoding a 320 kbps
+ * track needs (a long title takes ~20 s to scroll past). */
+#define NOW_MARQUEE_PASSES 1
+
+/* How far text too wide for `avail` has scrolled. With passes > 0 it stops
+ * at the start after that many passes; *moving says whether it still moves. */
+static int marquee_scroll(const struct font *f, const char *s, int avail, int passes, int *moving)
 {
+    *moving = 0;
     int w = gfx_text_width(f, s);
     if (w <= avail)
         return 0;
     uint32_t t = time_ms() - marquee_start;
+    int travel = w - avail + 12;
+    int cycle = travel + 40; /* hold at the end for a moment */
+    if (passes && t >= 1500 && (int)((t - 1500) / 40) >= passes * cycle)
+        return 0;
+    *moving = 1;
     if (t < 1500)
         return 0;
-    int travel = w - avail + 12;
-    int px = (int)((t - 1500) / 40); /* 25 px/s */
-    int cycle = travel + 40;         /* hold at the end for a moment */
-    px %= cycle;
+    int px = (int)((t - 1500) / 40) % cycle; /* 25 px/s */
     return px > travel ? travel : px;
+}
+
+static int marquee_offset(const struct font *f, const char *s, int avail)
+{
+    int moving;
+    return marquee_scroll(f, s, avail, 0, &moving);
 }
 
 static int needs_marquee(const struct font *f, const char *s, int avail)
@@ -355,9 +372,11 @@ static void render_now(void)
         return;
     }
     const char *title = P.cur.title[0] ? P.cur.title : "Unknown";
-    int off = marquee_offset(&font_large, title, GFX_W - 4);
+    int moving;
+    int off = marquee_scroll(&font_large, title, GFX_W - 4, NOW_MARQUEE_PASSES, &moving);
     if (needs_marquee(&font_large, title, GFX_W - 4)) {
-        animating = 1;
+        if (moving)
+            animating = 1;
         gfx_clip(2, 12, GFX_W - 2, 29);
         gfx_text(&font_large, 2 - off, 12, title, 3, INK_NORMAL);
         gfx_noclip();
@@ -410,8 +429,11 @@ static void render_status(void)
     animating = 1;
 }
 
+static uint32_t display_us; /* time spent drawing while playing, since the last report */
+
 static void render(void)
 {
+    uint32_t began = time_us();
     animating = 0;
     gfx_clear();
     gfx_noclip();
@@ -423,6 +445,8 @@ static void render(void)
     display_push();
     last_render = time_ms();
     dirty = 0;
+    if (P.state == P_PLAYING)
+        display_us += time_us() - began;
 }
 
 /* The logo sits where the kernel's splash screen draws it (tools/mklogo.py),
@@ -635,6 +659,7 @@ void ui_key(int key)
         return;
     }
     if (screen == SCR_NOW) {
+        marquee_start = time_ms(); /* show the whole title again */
         switch (key) {
         case KEY_UP:
             change_volume(wheel ? -2 : 5);
@@ -731,19 +756,29 @@ int ui_poll_start(int timeout_ms, unsigned stall_ms, uint32_t play_ms, uint32_t 
     player_underruns(&under, &under_ms);
     struct audio_stats au;
     audio_stats(&au);
-    /* CPU busy while playing, in percent (-1 when not playing) */
-    int cpu = -1;
+    /* CPU busy while playing, in percent (-1 when not playing), and the
+     * shares of it spent decoding, drawing the display and reading the
+     * network. The rest is the kernel and everything else. */
+    uint32_t dec_us, net_us;
+    player_cpu(&dec_us, &net_us);
+    uint32_t disp_us = display_us;
+    display_us = 0;
+    int cpu = -1, dec = -1, disp = -1, net = -1;
     if (play_ms >= 500) {
         uint32_t idle = wait_ms + au.blocked_ms;
         cpu = idle >= play_ms ? 0 : (int)((play_ms - idle) * 100 / play_ms);
+        dec = (int)((uint64_t)dec_us / 10 / play_ms);
+        disp = (int)((uint64_t)disp_us / 10 / play_ms);
+        net = (int)((uint64_t)net_us / 10 / play_ms);
     }
     snprintf(path, sizeof(path),
              "/ng/poll?mac=%s&st=%s&id=%lx&pos=%lu&vol=%d&qi=%d&qn=%d&shuf=%d&rep=%s&wake=%d&stall=%u"
-             "&under=%u&underms=%lu&gaps=%u&gapms=%lu&abuf=%lu&cpu=%d&ver=" VERSION,
+             "&under=%u&underms=%lu&gaps=%u&gapms=%lu&abuf=%lu&cpu=%d&dec=%d&disp=%d&net=%d&ver=" VERSION,
              net_mac(), standby ? "standby" : states[P.state],
              (unsigned long)(P.have_track ? P.cur.fid : 0), (unsigned long)player_position_ms(),
              P.volume, P.qi, P.qlen, P.shuffle, repeats[P.repeat], wake_port, stall_ms,
-             under, (unsigned long)under_ms, au.gaps, (unsigned long)au.gap_ms, (unsigned long)au.buffer_ms, cpu);
+             under, (unsigned long)under_ms, au.gaps, (unsigned long)au.gap_ms, (unsigned long)au.buffer_ms, cpu,
+             dec, disp, net);
     int r = http_async_start(&poll_req, path, poll_buf, sizeof(poll_buf), timeout_ms);
     if (r == 0) {
         player_underruns_reported();
