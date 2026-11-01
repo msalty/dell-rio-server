@@ -368,8 +368,17 @@ input[type=range] { accent-color: var(--accent); height: 4px; cursor: pointer; }
 .np-main .big-art { flex: none; width: min(440px, 100%, 52vh); aspect-ratio: 1; border-radius: 16px; overflow: hidden; box-shadow: 0 30px 60px rgba(0, 0, 0, .45); }
 .np-main .big-art .cover { border-radius: 0; }
 .np-main .titles { text-align: center; width: 100%; min-width: 0; }
-.np-main .titles h2 { margin: 0 0 4px; font-size: 26px; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.np-main .titles .sub { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.np-main .titles h2 { margin: 0 0 4px; font-size: 26px; line-height: 1.25; }
+.np-main .titles .sub { color: var(--muted); }
+/* A long line scrolls sideways (see ticker() in app.js). Its cut-off edges
+ * fade out instead of ending in "...", which a scrolling line can't show. */
+.ticker { overflow-x: auto; overflow-y: hidden; white-space: nowrap; scrollbar-width: none; overscroll-behavior-x: contain; cursor: default;
+  --fl: 0px; --fr: 0px;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--fl), #000 calc(100% - var(--fr)), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 var(--fl), #000 calc(100% - var(--fr)), transparent); }
+.ticker::-webkit-scrollbar { display: none; }
+.ticker.fade-l { --fl: 28px; }
+.ticker.fade-r { --fr: 28px; }
 .np-main .titles .sub a:hover { color: var(--accent); }
 .np-main .scrub { max-width: 520px; }
 .np-main .buttons { gap: 18px; }

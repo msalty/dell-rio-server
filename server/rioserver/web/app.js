@@ -925,6 +925,60 @@ async function movePlayback(from, to) {
   setTimeout(pollReceivers, 400);
 }
 
+// ---------------------------------------------------------------- ticker for long titles
+
+// A line too long for its box: it shows the start, then scrolls slowly to
+// the end, pauses, glides back and stops. It is also an ordinary sideways
+// scroller, so it can be swiped (or scrolled with a trackpad) at any time;
+// touching it stops the ticker, and tapping it plays the ticker again.
+const TICKER = { hold: 5000, replayHold: 800, speed: 35, endHold: 2000, backSpeed: 160 };
+function ticker(el) {
+  let raf = 0;
+  const fades = () => {
+    const max = el.scrollWidth - el.clientWidth;
+    el.classList.toggle("fade-l", el.scrollLeft > 1);
+    el.classList.toggle("fade-r", max - el.scrollLeft > 1);
+  };
+  const stop = () => { cancelAnimationFrame(raf); raf = 0; };
+  const run = (hold = TICKER.hold) => {
+    stop();
+    el.scrollLeft = 0;
+    fades();
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    let phase = "hold", elapsed = 0, last = null, pos = 0, max = 0;
+    const ease = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+    const step = (now) => {
+      // Frames stop while the page is hidden; the ticker carries on where it was.
+      const dt = last === null ? 0 : Math.min(100, now - last);
+      last = now;
+      max = el.scrollWidth - el.clientWidth;
+      if (max <= 1) { raf = 0; return; } // it fits
+      elapsed += dt;
+      if (phase === "hold") {
+        if (elapsed >= hold) { phase = "out"; elapsed = 0; }
+      } else if (phase === "out") {
+        pos = Math.min(max, pos + (TICKER.speed * dt) / 1000);
+        el.scrollLeft = pos;
+        if (pos >= max) { phase = "end"; elapsed = 0; }
+      } else if (phase === "end") {
+        if (elapsed >= TICKER.endHold) { phase = "back"; elapsed = 0; }
+      } else {
+        const d = Math.min(1, elapsed / Math.max(600, (max / TICKER.backSpeed) * 1000));
+        el.scrollLeft = max * (1 - ease(d));
+        if (d >= 1) { raf = 0; return; }
+      }
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+  };
+  el.classList.add("ticker");
+  el.addEventListener("scroll", fades, { passive: true });
+  for (const ev of ["pointerdown", "wheel", "touchstart"]) el.addEventListener(ev, stop, { passive: true });
+  el.addEventListener("click", (e) => { if (!e.target.closest("a")) run(TICKER.replayHold); });
+  window.addEventListener("resize", fades);
+  return { run, stop, fades };
+}
+
 // ---------------------------------------------------------------- full-screen Now Playing with Up Next
 
 const NowPlaying = {
@@ -944,6 +998,7 @@ const NowPlaying = {
     this.art = h("div", { class: "big-art" });
     this.title = h("h2");
     this.sub = h("div", { class: "sub" });
+    this.tickers = [ticker(this.title), ticker(this.sub)];
     this.qlist = h("div", { class: "qlist" });
     this.qnote = h("div", { class: "note" });
     this.qtools = h("div", { class: "btn-row" });
@@ -982,6 +1037,8 @@ const NowPlaying = {
   close() {
     this.el.hidden = true;
     document.body.style.overflow = "";
+    this.tkey = null; // the ticker runs again next time it opens
+    for (const tk of this.tickers || []) tk.stop();
   },
   toggle(scrollToQueue) {
     if (this.el.hidden) {
@@ -1006,12 +1063,19 @@ const NowPlaying = {
       this.art.replaceChildren(t ? cover(t.album_id, t.album) : cover(null, "RioServer"));
       this.bg.style.backgroundImage = t ? `url("${albumArtUrl(t.album_id)}")` : "";
     }
-    this.title.textContent = t ? t.title : "Nothing playing";
-    this.sub.replaceChildren(...(t ? [
-      t.podcast_id ? h("a", { href: `#/podcasts/${t.podcast_id}`, onclick: () => this.close() }, t.album)
-        : h("a", { href: `#/albums/${t.album_id}`, onclick: () => this.close() }, t.album),
-      " · ", t.artist,
-    ] : [ns.sub || "Pick something from your library"]));
+    // Only when the song changes: rewriting the text would reset the ticker.
+    const tkey = t ? `${t.id}|${t.title}|${t.album}|${t.artist}` : `none|${ns.sub}`;
+    if (this.tkey !== tkey) {
+      this.tkey = tkey;
+      this.title.textContent = t ? t.title : "Nothing playing";
+      this.sub.replaceChildren(...(t ? [
+        t.podcast_id ? h("a", { href: `#/podcasts/${t.podcast_id}`, onclick: () => this.close() }, t.album)
+          : h("a", { href: `#/albums/${t.album_id}`, onclick: () => this.close() }, t.album),
+        " · ", t.artist,
+      ] : [ns.sub || "Pick something from your library"]));
+      this.title.title = this.title.textContent;
+      for (const tk of this.tickers) tk.run();
+    }
     if (Player.target && Queue.remoteKey() !== this.qkey) this.renderQueue();
   },
   async renderQueue(force) {
