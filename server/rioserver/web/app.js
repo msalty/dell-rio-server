@@ -1292,25 +1292,39 @@ function emptyLibrary() {
       ". New music is picked up automatically within a few seconds."));
 }
 
-const firstLetter = (name) => {
-  const key = (name || "").normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/^(the|a|an)\s+/i, "")
-    .replace(/^["'([{.\-_ ]+/, "").charAt(0).toUpperCase();
-  return /[A-Z]/.test(key) ? key : "#";
-};
-function letterBar(letters, jump) {
-  return h("div", { class: "letters" }, letters.map((l) =>
-    h("a", { href: "#", role: "button", onclick: (e) => { e.preventDefault(); jump(l); } }, l)));
+// The key names are sorted and filed under, as the server makes it
+// (library.sort_key): no accents, no case, no leading "The"/"A"/"An" or
+// punctuation. "...And Justice for All" is filed under A, "A Day Without
+// Rain" under D and "72 Seasons" under #.
+function sortKey(name) {
+  let s = (name || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  for (const art of ["the ", "a ", "an "]) {
+    if (s.startsWith(art) && s.length > art.length) { s = s.slice(art.length); break; }
+  }
+  return s.replace(/^["'([{.\-_ ]+/, "") || (name || "").toLowerCase();
+}
+const ALPHABET = ["#", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"];
+const letterOf = (key) => { const c = (key || "").charAt(0).toUpperCase(); return c >= "A" && c <= "Z" ? c : "#"; };
+const firstLetter = (name) => letterOf(sortKey(name));
+// Sort by letter (# first, then A-Z, as the jump bar shows them), then by key.
+const byKey = (ka, kb) => ALPHABET.indexOf(letterOf(ka)) - ALPHABET.indexOf(letterOf(kb)) || (ka < kb ? -1 : ka > kb ? 1 : 0);
+// A jump bar: # A B C ... Z, with letters that have nothing under them
+// greyed out. With `labels` (decades), just those.
+function letterBar(present, jump, labels) {
+  const have = new Set(present);
+  return h("div", { class: "letters" }, (labels || ALPHABET).map((l) => have.has(l)
+    ? h("a", { href: "#", role: "button", onclick: (e) => { e.preventDefault(); jump(l); } }, l)
+    : h("span", { class: "off", "aria-hidden": "true" }, l)));
 }
 
 async function viewArtists() {
   const artists = await api("/api/artists");
   if (!artists.length) return [emptyLibrary()];
-  const groups = new Map();
-  for (const a of artists) {
-    const letter = firstLetter(a.name);
-    if (!groups.has(letter)) groups.set(letter, []);
-    groups.get(letter).push(a);
+  const groups = new Map(ALPHABET.map((l) => [l, []]));
+  for (const a of artists.slice().sort((x, y) => byKey(x.sort || sortKey(x.name), y.sort || sortKey(y.name)))) {
+    groups.get(letterOf(a.sort || sortKey(a.name))).push(a);
   }
+  for (const [l, list] of groups) if (!list.length) groups.delete(l);
   return [
     h("div", { class: "head-row" },
       h("div", {}, h("h1", {}, "Artists"), h("div", { class: "subtle" }, plural(artists.length, "artist")))),
@@ -1357,10 +1371,12 @@ async function viewArtist(id) {
   ];
 }
 
+const albumKey = (al) => al.sort || sortKey(al.title);
+const artistKey = (al) => al.artist_sort || sortKey(al.artist);
 const ALBUM_SORTS = {
-  name: ["Name", (a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" })],
-  artist: ["Artist", (a, b) => (a.artist_sort || a.artist).localeCompare(b.artist_sort || b.artist, undefined, { sensitivity: "base" }) || (a.year || 9999) - (b.year || 9999)],
-  year: ["Year", (a, b) => (b.year || 0) - (a.year || 0) || a.title.localeCompare(b.title)],
+  name: ["Name", (a, b) => byKey(albumKey(a), albumKey(b)) || byKey(artistKey(a), artistKey(b))],
+  artist: ["Artist", (a, b) => byKey(artistKey(a), artistKey(b)) || (a.year || 9999) - (b.year || 9999) || byKey(albumKey(a), albumKey(b))],
+  year: ["Year", (a, b) => (b.year || 0) - (a.year || 0) || byKey(albumKey(a), albumKey(b))],
   added: ["Recently added", (a, b) => (b.added || 0) - (a.added || 0)],
 };
 async function viewAlbums() {
@@ -1375,7 +1391,7 @@ async function viewAlbums() {
     grid.replaceChildren(...list.map((al) => {
       const tile = albumTile(al);
       // what the jump bar jumps to: a letter, or a decade when sorted by year
-      tile.dataset.letter = sort === "artist" ? firstLetter(al.artist) : sort === "name" ? firstLetter(al.title)
+      tile.dataset.letter = sort === "artist" ? letterOf(artistKey(al)) : sort === "name" ? letterOf(albumKey(al))
         : sort === "year" ? (al.year ? `${Math.floor(al.year / 10) * 10}s` : "—") : "";
       return tile;
     }));
@@ -1383,7 +1399,7 @@ async function viewAlbums() {
     bar.replaceChildren(keys.length > 1 && sort !== "added" ? letterBar(keys, (l) => {
       const t = [...grid.children].find((x) => x.dataset.letter === l);
       if (t) t.scrollIntoView({ behavior: "smooth", block: "start" });
-    }) : "");
+    }, sort === "year" ? keys : null) : "");
   };
   const select = h("select", { "aria-label": "Sort albums", onchange: (e) => { sort = e.target.value; store("rio.albumSort", sort); draw(); } },
     Object.entries(ALBUM_SORTS).map(([k, [label]]) => h("option", { value: k, selected: k === sort }, label)));

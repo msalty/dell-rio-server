@@ -163,6 +163,7 @@ svg .fill { fill: currentColor; stroke: none; }
 .letters { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 18px; }
 .letters a { min-width: 28px; height: 28px; padding: 0 4px; display: grid; place-items: center; border-radius: 8px; font-size: 13px; color: var(--muted); cursor: pointer; }
 .letters a:hover { background: var(--panel); color: var(--accent); }
+.letters span.off { min-width: 28px; height: 28px; padding: 0 4px; display: grid; place-items: center; font-size: 13px; color: var(--faint); opacity: .45; }
 
 /* artist index */
 .artist-group h3 { font-size: 13px; color: var(--accent); margin: 18px 0 8px; letter-spacing: 1px; }

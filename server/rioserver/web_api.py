@@ -226,7 +226,7 @@ class WebAPI:
     async def artists(self, req: web.Request) -> web.Response:
         rows = await self._run(self.lib.artists)
         return web.json_response([
-            {"id": a["id"], "name": a["name"], "album_count": a["album_count"],
+            {"id": a["id"], "name": a["name"], "sort": a["sort"], "album_count": a["album_count"],
              "track_count": a["track_count"]} for a in rows])
 
     async def artist(self, req: web.Request) -> web.Response:

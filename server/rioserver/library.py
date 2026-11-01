@@ -568,7 +568,7 @@ class Library:
             args.append(genre_id)
         order = "COALESCE(al.year, 9999), al.sort" if artist_id is not None else "al.sort, ar.sort"
         rows = self._q(
-            "SELECT al.id, al.title, al.year, al.artist_id, ar.name AS artist, ar.sort AS artist_sort, "
+            "SELECT al.id, al.title, al.sort, al.year, al.artist_id, ar.name AS artist, ar.sort AS artist_sort, "
             "COUNT(t.id) AS track_count, SUM(t.duration_ms) AS duration_ms, MIN(t.id) AS first_track, "
             "MAX(t.added) AS added "
             "FROM albums al JOIN artists ar ON ar.id = al.artist_id JOIN tracks t ON t.album_id = al.id "
