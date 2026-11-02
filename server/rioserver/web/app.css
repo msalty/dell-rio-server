@@ -99,7 +99,10 @@ svg .fill { fill: currentColor; stroke: none; }
 .pill { background: var(--accent); color: var(--accent-ink); font-size: 11px; font-weight: 700; border-radius: 99px; padding: 1px 7px; }
 .sidebar-foot { margin-top: auto; font-size: 12px; color: var(--faint); padding: 0 10px; }
 .sidebar-foot .scanning { color: var(--accent); }
-.scrim { position: fixed; inset: 0; background: var(--overlay); z-index: 5; }
+/* The page behind the open menu on phones. It stops at the player, which
+ * stays bright and usable, and fades in and out with the menu's slide. */
+.scrim { position: fixed; inset: 0 0 calc(var(--player-h) + var(--safe-b)) 0; background: var(--overlay); z-index: 5; opacity: 0; pointer-events: none; transition: opacity .2s; }
+.scrim.show { opacity: 1; pointer-events: auto; }
 
 /* top bar */
 .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -433,8 +436,9 @@ input[type=range] { accent-color: var(--accent); height: 4px; cursor: pointer; }
 @media (max-width: 860px) {
   :root { --player-h: 138px; }
   .app { grid-template-columns: 1fr; }
-  .sidebar { position: fixed; inset: 0 auto calc(var(--player-h) + var(--safe-b)) 0; width: 260px; z-index: 6; transform: translateX(-100%); transition: transform .2s; box-shadow: var(--shadow); }
-  .sidebar.open { transform: none; }
+  .sidebar { position: fixed; inset: 0 auto calc(var(--player-h) + var(--safe-b)) 0; width: 260px; z-index: 6; transform: translateX(-100%); transition: transform .2s, box-shadow .2s; padding-top: calc(18px + var(--safe-t)); }
+  /* the shadow only while it's open, so none peeks in from the edge when it's closed */
+  .sidebar.open { transform: none; box-shadow: 6px 0 24px rgba(0, 0, 0, .28); }
   .icon-btn.menu-btn { display: inline-flex; }
   .topbar { padding: 10px 16px; gap: 8px; }
   .search { min-width: 0; }

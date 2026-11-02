@@ -1035,6 +1035,7 @@ const NowPlaying = {
   },
   open() {
     this.build();
+    toggleSidebar(false); // opening it from the player closes the menu
     this.el.hidden = false;
     document.body.style.overflow = "hidden";
     renderNowPlaying();
@@ -2526,7 +2527,7 @@ function toggleSidebar(open) {
   const sb = $("#sidebar");
   const want = open === undefined ? !sb.classList.contains("open") : open;
   sb.classList.toggle("open", want);
-  $("#scrim").hidden = !want;
+  $("#scrim").classList.toggle("show", want);
 }
 $("#menu-btn").addEventListener("click", () => toggleSidebar());
 // Choosing the page you're already on from the menu goes back to its top.
