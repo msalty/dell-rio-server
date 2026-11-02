@@ -191,6 +191,10 @@ function volumeSender(getId) {
   };
 }
 
+// No pinch-zoom on iPhone and iPad (Safari's own gesture events), so the
+// installed app doesn't zoom by accident.
+for (const ev of ["gesturestart", "gesturechange"]) document.addEventListener(ev, (e) => e.preventDefault(), { passive: false });
+
 // ---------------------------------------------------------------- theme
 
 const THEME_COLORS = { dark: "#12181c", light: "#eef2f3" };
@@ -1566,6 +1570,7 @@ async function pollStatus() {
     );
     if (libVersion !== null && s.version !== libVersion) {
       playlistCache = null;
+      viewCache.clear(); // pages drawn before the change are out of date; positions stay
       if (["artists", "albums", "songs", "genres", "recent", "playlists", "podcasts"].includes(currentRoute)) {
         route({ keepScroll: true });
       }
@@ -2435,11 +2440,38 @@ const routes = [
   [/^search\/(.+)$/, (q) => viewSearch(decodeURIComponent(q)), "search"],
 ];
 
+// Going back (the edge swipe, the back button) returns to a page as it was
+// left: each history entry gets a key, and the page drawn for it and how far
+// it was scrolled are kept. A new page (a link, the menu) starts at the top.
+// The pages are kept for this visit; the scroll positions survive a reload.
+const VIEW_CACHE = 15;
+const viewCache = new Map(); // entry key -> {path, nodes}
+const scrollPos = new Map((() => { try { return JSON.parse(sessionStorage.getItem("rio.scroll") || "[]"); } catch { return []; } })());
+let currentKey = null, scrollSaveTimer = null;
+view.addEventListener("scroll", () => {
+  if (!currentKey) return;
+  scrollPos.set(currentKey, view.scrollTop);
+  clearTimeout(scrollSaveTimer);
+  scrollSaveTimer = setTimeout(() => {
+    try { sessionStorage.setItem("rio.scroll", JSON.stringify([...scrollPos].slice(-60))); } catch { /* full or private */ }
+  }, 400);
+}, { passive: true });
+function entryKey() {
+  const st = history.state;
+  if (st && st.rioKey) return [st.rioKey, true];
+  const key = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  history.replaceState({ ...(st || {}), rioKey: key }, "");
+  return [key, false];
+}
+
 let routeSeq = 0;
 async function route({ keepScroll = false } = {}) {
   let path = location.hash.replace(/^#\/?/, "") || "artists";
   if (path === "library") { location.replace("#/settings"); return; }
   const seq = ++routeSeq;
+  const [key, seen] = entryKey();
+  const returning = seen && !keepScroll && key !== currentKey;
+  currentKey = key;
   for (const [re, fn, nav] of routes) {
     const m = path.match(re);
     if (!m) continue;
@@ -2448,6 +2480,14 @@ async function route({ keepScroll = false } = {}) {
     document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === nav));
     toggleSidebar(false);
     const top = view.scrollTop;
+    const cached = returning && nav !== "receivers" && viewCache.get(key);
+    if (cached && cached.path === path) {
+      // Back to a page drawn before: put it back as it was, at once.
+      view.replaceChildren(...cached.nodes);
+      view.scrollTop = scrollPos.get(key) || 0;
+      markPlaying();
+      return;
+    }
     try {
       const content = await fn(...m.slice(1));
       if (seq !== routeSeq) return;
@@ -2456,7 +2496,10 @@ async function route({ keepScroll = false } = {}) {
       if (seq !== routeSeq) return;
       view.replaceChildren(h("div", { class: "empty" }, h("h2", {}, "Something went wrong"), h("p", {}, e.message)));
     }
-    view.scrollTop = keepScroll ? top : 0;
+    viewCache.delete(key);
+    viewCache.set(key, { path, nodes: [...view.childNodes] });
+    while (viewCache.size > VIEW_CACHE) viewCache.delete(viewCache.keys().next().value);
+    view.scrollTop = keepScroll ? top : returning ? (scrollPos.get(key) || 0) : 0;
     // Podcast downloads in progress: look again shortly.
     if (nav === "podcasts" && view.querySelector(".spin")) {
       setTimeout(() => { if (seq === routeSeq) route({ keepScroll: true }); }, 3000);
@@ -2471,7 +2514,13 @@ let searchTimer;
 $("#search").addEventListener("input", (e) => {
   clearTimeout(searchTimer);
   const q = e.target.value.trim();
-  searchTimer = setTimeout(() => { location.hash = q ? `#/search/${encodeURIComponent(q)}` : "#/artists"; }, 250);
+  // Typing changes the results page in place: going back leaves search
+  // instead of stepping back through every letter typed.
+  searchTimer = setTimeout(() => {
+    const to = q ? `#/search/${encodeURIComponent(q)}` : "#/artists";
+    if (currentRoute === "search") location.replace(to);
+    else location.hash = to;
+  }, 250);
 });
 function toggleSidebar(open) {
   const sb = $("#sidebar");
@@ -2480,6 +2529,15 @@ function toggleSidebar(open) {
   $("#scrim").hidden = !want;
 }
 $("#menu-btn").addEventListener("click", () => toggleSidebar());
+// Choosing the page you're already on from the menu goes back to its top.
+for (const link of document.querySelectorAll("#sidebar a[href^='#/']")) {
+  link.addEventListener("click", (e) => {
+    if (link.getAttribute("href") !== location.hash) return;
+    e.preventDefault();
+    toggleSidebar(false);
+    view.scrollTo({ top: 0, behavior: "smooth" });
+  });
+}
 $("#scrim").addEventListener("click", () => toggleSidebar(false));
 
 showResume();

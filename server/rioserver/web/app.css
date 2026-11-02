@@ -491,3 +491,12 @@ input[type=range] { accent-color: var(--accent); height: 4px; cursor: pointer; }
 }
 .np-head .where.is-self { color: var(--accent); cursor: pointer; flex: 0 1 auto; margin: 0 auto; border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 99px; padding: 5px 12px; letter-spacing: 1px; }
 
+/* Feel like an app on phones: no zooming. Double-tap zoom is off here; iOS
+ * zooms into any text field under 16px when it's tapped, so on phones they
+ * are 16px; pinch-zoom is stopped in app.js. */
+html { touch-action: manipulation; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+@media (max-width: 860px) {
+  input, select, textarea, .search input, .field input, .field select, .field textarea,
+  .btn-row select, .head-row select, .card .sleep { font-size: 16px; }
+}
+
