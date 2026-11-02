@@ -1214,7 +1214,15 @@ const RX = {
 
   get el() { return this.els[this.cur]; },
   get other() { return this.els[1 - this.cur]; },
+  // Whether this device is a receiver right now ("rio.receiver"), and the
+  // name it had last time, which stays when it stops being one
+  // ("rio.receiverName"), so it's only set up once.
   saved() { try { return JSON.parse(store("rio.receiver") || "null"); } catch { return null; } },
+  rememberedName() { return store("rio.receiverName") || (this.saved() || {}).name || ""; },
+  remember(name) {
+    store("rio.receiverName", name);
+    if (this.on) store("rio.receiver", JSON.stringify({ name }));
+  },
   defaultName() {
     const ua = navigator.userAgent;
     if (/Silk|\bKF[A-Z]{2,}\b/.test(ua)) return "Fire Tablet";
@@ -1228,6 +1236,7 @@ const RX = {
   start(name) {
     this.name = name;
     store("rio.receiver", JSON.stringify({ name }));
+    store("rio.receiverName", name);
     // Playing each audio element once during the tap lets the page play it
     // later without one. The one that has a song carries on with it.
     for (const el of this.els) {
@@ -1257,6 +1266,7 @@ const RX = {
     if (this.wake) { this.wake.release().catch(() => {}); this.wake = null; }
     if (Player.target === this.id) setTarget("");
     this.id = "";
+    NowPlaying.close(); // the display opened when it started
     renderPill();
     pollReceivers();
     toast("This device is no longer a receiver");
@@ -1398,9 +1408,15 @@ function silentWav() {
   return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
 }
 
-// The setup sheet: a name, and the tap that starts it.
+// The first time, a sheet asks for a name; after that the device starts
+// straight away under the name it had (rename it from its menu).
 async function becomeReceiver() {
-  const input = h("input", { type: "text", value: (RX.saved() || {}).name || RX.defaultName(), maxlength: 40, required: true });
+  const known = RX.rememberedName();
+  if (known) {
+    RX.start(known); // inside the tap on the card, so sound unlocks
+    return;
+  }
+  const input = h("input", { type: "text", value: RX.defaultName(), maxlength: 40, required: true });
   const body = h("div", { style: "display:flex;flex-direction:column;gap:12px" },
     h("p", { class: "subtle", style: "margin:0" },
       "Other devices can then send music here, for example to a tablet or old phone plugged into a stereo. Keep this page open; the screen stays on while it plays."),
@@ -1441,7 +1457,7 @@ function rxMenu(anchor) {
   { label: "Show the display", icon: "album", run: () => { setTarget(RX.id); NowPlaying.open(); } },
   { label: "Rename…", icon: "edit", run: async () => {
     const n = await askText("Rename this receiver", "Name", RX.name);
-    if (n) { RX.name = n; store("rio.receiver", JSON.stringify({ name: n })); RX.send({ type: "hello", name: n, volume: RX.volumeWorks }); renderPill(); setTimeout(pollReceivers, 300); }
+    if (n) { RX.name = n; RX.remember(n); RX.send({ type: "hello", name: n, volume: RX.volumeWorks }); renderPill(); setTimeout(pollReceivers, 300); }
   } },
   "-",
   { label: "Stop being a receiver", icon: "x", danger: true, run: () => RX.stop() },
@@ -2192,12 +2208,20 @@ function receiverCard(id) {
 let receiverHolder = null;
 const receiverCards = new Map();
 // The last card: this browser can be a receiver too.
+const addSelfNote = h("span", { class: "meta" });
 const addSelfCard = h("button", { class: "card add-self", onclick: () => becomeReceiver().catch(fail) },
   h("span", { class: "add-self-icon", html: ICON.cast }),
   h("b", {}, "Use this device as a receiver"),
-  h("span", { class: "meta" }, "Play music from other devices through this one, for example a tablet plugged into a stereo."));
+  addSelfNote);
+function updateAddSelfCard() {
+  const known = RX.rememberedName();
+  addSelfNote.textContent = known
+    ? `Starts as “${known}”. Rename it from its menu once it's running.`
+    : "Play music from other devices through this one, for example a tablet plugged into a stereo.";
+}
 function renderReceiverCards() {
   if (!receiverHolder) return;
+  updateAddSelfCard();
   if (!Player.receivers.length) {
     receiverCards.clear();
     receiverHolder.replaceChildren(h("div", { class: "empty", style: "grid-column:1/-1" },

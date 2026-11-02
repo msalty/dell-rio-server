@@ -224,6 +224,11 @@ menu, including **Stop being a receiver**.
   leave it showing, plugged in. The screen stays on while it's a receiver
   (on iOS from 16.4). On an iPhone or iPad, Guided Access keeps it on this
   page.
+- **Set up once.** The device remembers its name: next time, the card on
+  the Receivers page says "Starts as Living Room" and one tap starts it.
+  Rename it from its menu. On an iPhone or iPad, add the web interface to the
+  Home Screen and use it from there: Safari clears what a website stored if
+  it isn't opened for a week, but not for Home Screen apps.
 - **One tap after a restart.** Browsers only play sound after a tap. If the
   page reloads, it shows the receiver's name: tap once and it carries on
   where it was.
