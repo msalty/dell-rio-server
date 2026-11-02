@@ -339,7 +339,10 @@ code { background: var(--panel-2); padding: 1px 6px; border-radius: 6px; font-si
 .alarm .acts { display: flex; gap: 4px; align-items: center; }
 
 /* player bar: tinted by the cover */
-.player { position: fixed; left: 0; right: 0; bottom: 0; height: calc(var(--player-h) + var(--safe-b)); display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1fr); align-items: center; gap: 20px; padding: 0 22px var(--safe-b); background: linear-gradient(90deg, color-mix(in srgb, var(--art) var(--art-mix), var(--bg-2)), var(--bg-2) 70%); border-top: 1px solid var(--line); z-index: 4; transition: background .6s; }
+.player { position: fixed; left: 0; right: 0; bottom: 0; height: calc(var(--player-h) + var(--safe-b)); display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1fr); align-items: center; gap: 20px; padding: 0 22px var(--safe-b); background: linear-gradient(90deg, color-mix(in srgb, var(--art) var(--art-mix), var(--bg-2)), var(--bg-2) 70%); border-top: 1px solid var(--line); z-index: 7; transition: background .6s; }
+/* Layers on phones, bottom to top: the page, the dimming behind the open
+ * menu (5), the menu (6), the player (7, always on top and never dimmed),
+ * then Now Playing (8), pop-up menus, dialogs and messages. */
 .np { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .np-art { width: 54px; height: 54px; border-radius: 8px; overflow: hidden; flex: none; background: var(--panel-2); border: 0; padding: 0; cursor: pointer; box-shadow: 0 4px 12px rgba(0, 0, 0, .2); }
 .np-art .cover { border-radius: 0; }
