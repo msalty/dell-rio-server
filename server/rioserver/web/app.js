@@ -207,6 +207,7 @@ function applyTheme(choice) {
     const media = (meta.getAttribute("media") || "").includes("light") ? "light" : "dark";
     meta.setAttribute("content", THEME_COLORS[root.dataset.theme || media]);
   }
+  if (typeof retintAll === "function") retintAll();
 }
 applyTheme(store("rio.theme") || "system");
 
@@ -249,9 +250,41 @@ function artColor(src) {
   artColors.set(src, p);
   return p;
 }
-function tintFrom(el, src) {
-  artColor(src).then((c) => { if (c) el.style.setProperty("--art", c); else el.style.removeProperty("--art"); });
+// A cover's colour, kept dark enough for light text in the dark theme (and
+// light enough for dark text in the light theme), so a white or black cover
+// doesn't wash out what's written over its tint.
+function themeIsLight() {
+  const t = document.documentElement.dataset.theme;
+  return t ? t === "light" : window.matchMedia("(prefers-color-scheme: light)").matches;
 }
+function tintFor(raw, light) {
+  const [r, g, b] = raw.split(",").map((x) => Number(x) / 255);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2, d = max - min;
+  let hue = 0, sat = 0;
+  if (d) {
+    sat = d / (1 - Math.abs(2 * l - 1));
+    hue = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  }
+  const L = light ? Math.max(l, 0.82) : Math.min(l, 0.3);
+  return `hsl(${Math.round(hue * 60 + 360) % 360} ${Math.round(Math.min(sat, 0.75) * 100)}% ${Math.round(L * 100)}%)`;
+}
+function applyTint(el) {
+  const raw = el.dataset.artRaw;
+  if (raw) el.style.setProperty("--art", tintFor(raw, themeIsLight()));
+  else el.style.removeProperty("--art");
+}
+function tintFrom(el, src) {
+  artColor(src).then((c) => {
+    if (c) el.dataset.artRaw = c.match(/\d+/g).slice(0, 3).join(",");
+    else delete el.dataset.artRaw;
+    applyTint(el);
+  });
+}
+// When the theme changes, every tint switches to the other limit.
+function retintAll() {
+  for (const el of document.querySelectorAll("[data-art-raw]")) applyTint(el);
+}
+window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", retintAll);
 
 // ---------------------------------------------------------------- the browser's player
 
