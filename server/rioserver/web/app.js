@@ -606,7 +606,8 @@ function nowState() {
     const st = (r && r.state) || {};
     const t = st.track;
     return {
-      t, playing: rxPlaying(st), remote: true, r, st,
+      // an offline receiver isn't playing, whatever it last reported
+      t, playing: !!r && r.online && rxPlaying(st), remote: true, r, st,
       shuffle: st.shuf === "1", repeat: st.rep || "off",
       sub: t ? `${t.artist} — ${t.album}` : (r ? `${r.name} · ${!r.online ? "offline" : st.app ? `in use by ${st.app}` : "idle"}` : ""),
     };
@@ -628,8 +629,38 @@ function renderModes() {
 $("#btn-shuffle").classList.add("mode-shuffle");
 $("#btn-repeat").classList.add("mode-repeat");
 
+// The pill in the player saying where the music goes, when that isn't this
+// browser; tapping it switches. Grey when that player can't play right now.
+function renderWherePill(ns) {
+  const pill = $("#where-pill");
+  pill.hidden = !Player.target;
+  if (!Player.target) return;
+  const r = ns.r;
+  const self = RX.on && Player.target === RX.id;
+  const name = self ? `This device · ${RX.name}` : r ? r.name : "Receiver";
+  const trouble = !r || !r.online ? "offline" : ns.st && ns.st.app ? `in use by ${ns.st.app}` : "";
+  const label = trouble ? `${name} · ${trouble}` : name;
+  if (pill.dataset.label === label) return;
+  pill.dataset.label = label;
+  pill.classList.toggle("off", !!trouble);
+  pill.replaceChildren(h("span", { class: "ic", html: ICON.cast }), h("span", { class: "nm" }, label));
+  pill.title = trouble ? `${label}. Tap to play somewhere else.` : `Playing on ${name}. Tap to play somewhere else.`;
+  pill.setAttribute("aria-label", pill.title);
+}
+$("#where-pill").addEventListener("click", (e) => {
+  const options = (RX.on ? [] : [{ id: "", name: "This browser", icon: "monitor" }]).concat(
+    Player.receivers.filter(canTarget).map((r) => ({
+      id: r.id, icon: "cast",
+      name: `${r.id === RX.id ? `This device (${r.name})` : r.name}${r.online ? "" : " · offline"}`,
+    })));
+  showMenu(e.currentTarget, options.map((o) => ({
+    label: o.name, icon: o.id === Player.target ? "check" : o.icon, run: () => chooseTarget(o.id),
+  })), "Play on");
+});
+
 function renderNowPlaying() {
   const ns = nowState();
+  renderWherePill(ns);
   const { t, playing } = ns;
   if (ns.remote && ns.st && ns.st.vol) {
     for (const el of document.querySelectorAll(".vol-input")) if (!isBusy(el)) el.value = ns.st.vol;
@@ -660,7 +691,7 @@ function progressNow() {
     if (st && st.track) {
       dur = st.track.duration_ms;
       pos = Number(st.pos || 0);
-      if (st.st === "play" && Player._statusAt) pos += Date.now() - Player._statusAt;
+      if (st.st === "play" && Player._statusAt && Player.receiver.online) pos += Date.now() - Player._statusAt;
       pos = Math.min(pos, dur);
     }
   } else if (Player.current) {
@@ -1535,9 +1566,12 @@ function showTarget() {
   wrap.title = `Play on ${name}`;
 }
 
-$("#target").addEventListener("change", (e) => {
+$("#target").addEventListener("change", (e) => chooseTarget(e.target.value));
+// Send music somewhere else (from "Play on" or the player's pill), and
+// offer to take what's playing along.
+function chooseTarget(id) {
   const was = Player.target;
-  const id = e.target.value;
+  if (id === was) return;
   const playingHere = !was && Player.current && !audio.paused;
   setTarget(id);
   const name = id ? (Player.receiver ? Player.receiver.name : id) : "this browser";
@@ -1549,7 +1583,7 @@ $("#target").addEventListener("change", (e) => {
       { label: "Not now", run: () => {} },
     ]);
   }
-});
+}
 // Poll briskly while a receiver is being controlled, slowly otherwise.
 function schedulePoll() {
   const delay = document.hidden ? 10000 : (Player.target || currentRoute === "receivers") ? 1000 : 4000;

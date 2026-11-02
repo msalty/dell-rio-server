@@ -507,3 +507,15 @@ html { touch-action: manipulation; -webkit-text-size-adjust: 100%; text-size-adj
   .btn-row select, .head-row select, .card .sleep { font-size: 16px; }
 }
 
+/* where the music goes, in the player (only when it isn't this browser) */
+.where-pill { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 200px; border: 1px solid var(--accent); background: var(--accent-soft); color: var(--accent); border-radius: 99px; padding: 5px 11px 5px 8px; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; flex: 0 1 auto; }
+.where-pill .ic { display: inline-flex; flex: none; }
+.where-pill .ic svg { width: 15px; height: 15px; }
+.where-pill .nm { overflow: hidden; text-overflow: ellipsis; }
+.where-pill.off { border-color: var(--line); color: var(--muted); background: var(--panel); }
+.where-pill:hover { filter: brightness(1.08); }
+@media (max-width: 860px) {
+  .volume { gap: 4px; min-width: 0; }
+  .where-pill { max-width: 128px; padding: 4px 9px 4px 7px; }
+}
+
