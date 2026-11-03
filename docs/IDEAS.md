@@ -42,6 +42,57 @@ remote-control web address on the tablet (its REST interface). The server
 could call it to turn the screen on when it starts music there, at the cost
 of storing the tablet's address and Fully's password on the server.
 
+**Free alternatives to Fully** (checked November 2026, from each app's own
+documentation; none tried on a device yet). What we need: the receiver page
+keeps running and connected with the screen off; the page, or our server, can
+turn the screen on and off; it runs on Fire tablets; no licence fee.
+
+- **[Kiosk Satellite](https://github.com/jxlarrea/kiosk-satellite):
+  closest to Fully.** It gives every page a `window.kioskSatellite` object
+  (detect it with `window.kioskSatellite.platform === "kiosksatellite"`) with
+  `screenOn()`, `screenOff()` and `isScreenOn()`, and fires
+  `kiosksatellite:screenon` / `kiosksatellite:screenoff` events
+  ([JavaScript API](https://github.com/jxlarrea/kiosk-satellite/blob/main/docs/js-api.md)).
+  The receiver page would use it as described for Fully above. Free for
+  personal, non-commercial use (CC BY-NC-ND 4.0, so not open source).
+  Android 7+, and it has a setup guide for Amazon Fire tablets.
+  - `screenOff()` needs the "device admin" permission.
+  - It's built around Home Assistant (it's also a voice satellite); check that
+    it's happy showing our page on its own.
+  - Its docs say voice and the Home Assistant connection keep working with the
+    screen off, but not whether the web page keeps running. Test that first:
+    start music, let the screen go off, then send music again and see that it
+    wakes.
+- **[FreeKiosk](https://github.com/RushB-fr/freekiosk): the open-source
+  fallback** (MIT, free; an optional paid cloud service). Screen control is a
+  REST API on the tablet, `GET`/`POST` `/api/screen/on` and `/api/screen/off`,
+  with an optional API key
+  ([REST API](https://github.com/RushB-fr/freekiosk/blob/main/docs/rest-api.md)).
+  Its web server stays reachable with the screen off.
+  - It truly turns the screen off only with Device Owner, Device Admin or
+    Accessibility permission; without them, "off" dims to black.
+  - No documented way for the page itself to switch the screen, so our server
+    would call the tablet (storing its address, and the API key if one is
+    set), as in the Fully REST fallback above.
+  - Android 8+; Fire tablets aren't mentioned.
+- **Also looked at, less suitable:**
+  - [Webview Kiosk](https://github.com/nktnet1/webview-kiosk) (AGPL, free):
+    can wake the screen from MQTT commands, which we don't use; no confirmed
+    screen-off command.
+  - [Open Kiosk](https://github.com/shoshins/open-kiosk) (Apache, free): very
+    new; its screensaver darkens rather than turns the screen off, and no
+    screen-off command is documented.
+  - [WallPanel](https://github.com/thanksmister/wallpanel-android) (Apache,
+    free): older, with a remote "wake" command; showing its age, screen-off not
+    documented.
+  - [KioskZen](https://github.com/exraaaa/KioskZen): no longer developed.
+
+**Plan when picking this up:** try Kiosk Satellite on one Fire tablet and
+check the receiver stays connected with the screen off. If it does, support
+it like Fully (detect `window.kioskSatellite`, screen on when music arrives,
+off after idle, skip `RX.keepAwake()`). If it doesn't, use FreeKiosk with the
+server switching the screen.
+
 **Not possible on iPhone and iPad:** iOS freezes web pages when the screen
 locks, and nothing can wake them to start audio.
 
