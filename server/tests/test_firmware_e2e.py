@@ -547,3 +547,40 @@ def test_play_next_reaches_the_firmware_without_interrupting(server, tmp_path):
         assert q["known"] and q["tracks"][q["index"]]["title"] in ("Something", "Maxwell's Silver Hammer"), q
     finally:
         rx.stop()
+
+
+def test_music_from_the_web_wakes_a_receiver_in_standby(server, tmp_path):
+    """Starting music on a receiver in standby wakes it (display on, Now
+    Playing), and it reports playing, so the web interface shows pause."""
+    import json
+    import urllib.request
+
+    from simulate import Receiver
+
+    def api(path, body=None):
+        req = urllib.request.Request(f"http://{server}{path}", data=json.dumps(body).encode() if body else None,
+                                     headers={"Content-Type": "application/json"})
+        return json.load(urllib.request.urlopen(req))
+
+    rx = Receiver(str(FIRMWARE), server, workdir=str(tmp_path / "rx"))
+    try:
+        time.sleep(3)
+        rid = api("/api/receivers")[0]["id"]
+        rx.press("power", delay=0.5)  # standby: the display goes dark
+        deadline = time.time() + 6
+        while api("/api/receivers")[0]["state"].get("st") != "standby" and time.time() < deadline:
+            time.sleep(0.3)
+        assert api("/api/receivers")[0]["state"]["st"] == "standby"
+        assert lit_pixels(rx.pixels()) < 50
+        abbey = next(a for a in api("/api/albums") if a["title"] == "Abbey Road")
+        api(f"/api/receivers/{rid}/play", {"album_id": abbey["id"]})
+        deadline = time.time() + 6
+        while api("/api/receivers")[0]["state"].get("st") not in ("play", "buffer") and time.time() < deadline:
+            time.sleep(0.2)
+        st = api("/api/receivers")[0]["state"]
+        assert st["st"] in ("play", "buffer"), st
+        assert st["ver"] == "1.7"
+        time.sleep(0.5)
+        assert lit_pixels(rx.pixels()) > 300, rx.console()  # awake, showing Now Playing
+    finally:
+        rx.stop()

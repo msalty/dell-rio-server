@@ -17,7 +17,7 @@
 #include "player.h"
 #include "sys.h"
 
-#define VERSION "1.6"
+#define VERSION "1.7"
 #define WIN 24
 #define ROWS 4
 #define ROW_H 13
@@ -776,6 +776,19 @@ static void run_command(char **f, int nf)
     } else if (!strcmp(verb, "msg") && nf >= 3) {
         strlcpy(P.status, f[2], sizeof(P.status));
         P.status_until = time_ms() + 5000;
+    }
+    if (standby && (P.state == P_PLAYING || P.state == P_BUFFERING)) {
+        /* Music started from the web interface (or an alarm) while in
+         * standby: wake up, as pressing Play would. Staying in standby
+         * would play with the display off and report "standby". */
+        standby = 0;
+        display_power(1);
+        if (!backlight_on) {
+            display_backlight(1);
+            backlight_on = 1;
+        }
+        last_key = time_ms();
+        show_now_playing();
     }
     dirty = 1;
 }
