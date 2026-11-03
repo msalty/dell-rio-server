@@ -17,7 +17,7 @@
 #include "player.h"
 #include "sys.h"
 
-#define VERSION "1.5"
+#define VERSION "1.7"
 #define WIN 24
 #define ROWS 4
 #define ROW_H 13
@@ -744,6 +744,18 @@ static void run_command(char **f, int nf)
         int shuffle = nf >= 5 ? atoi(f[4]) : 0;
         if (player_play_node(f[2], first, shuffle) == 0 && !standby)
             show_now_playing();
+    } else if (!strcmp(verb, "queue") && nf >= 4) {
+        int start = nf >= 5 ? atoi(f[4]) : 0;
+        int shuffle = nf >= 6 ? atoi(f[5]) : P.shuffle;
+        if (player_set_queue(f[2], atoi(f[3]), start, shuffle) == 0 && start && !standby)
+            show_now_playing();
+    } else if (!strcmp(verb, "repeat") && nf >= 3) {
+        if (!strcmp(f[2], "all"))
+            player_set_repeat(REPEAT_ALL);
+        else if (!strcmp(f[2], "one"))
+            player_set_repeat(REPEAT_ONE);
+        else
+            player_set_repeat(REPEAT_OFF);
     } else if (!strcmp(verb, "pause")) {
         player_pause();
     } else if (!strcmp(verb, "resume")) {
@@ -764,6 +776,19 @@ static void run_command(char **f, int nf)
     } else if (!strcmp(verb, "msg") && nf >= 3) {
         strlcpy(P.status, f[2], sizeof(P.status));
         P.status_until = time_ms() + 5000;
+    }
+    if (standby && (P.state == P_PLAYING || P.state == P_BUFFERING)) {
+        /* Music started from the web interface (or an alarm) while in
+         * standby: wake up, as pressing Play would. Staying in standby
+         * would play with the display off and report "standby". */
+        standby = 0;
+        display_power(1);
+        if (!backlight_on) {
+            display_backlight(1);
+            backlight_on = 1;
+        }
+        last_key = time_ms();
+        show_now_playing();
     }
     dirty = 1;
 }

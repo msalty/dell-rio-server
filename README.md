@@ -12,13 +12,30 @@ RioServer NG runs in Docker. It provides:
 
 - **iPod-style menus on the receiver.** The project includes new receiver
   firmware: Music › Artists › Albums › Songs, with albums in release order and
-  tracks in album order. There are also Albums, Songs, Genres, Playlists,
-  Recently Added, Shuffle Songs, a Now Playing screen and Settings.
+  tracks in album order. There are also Albums, Songs, Genres, Playlists
+  (with Top 25 Most Played and Recently Played), Podcasts, Recently Added,
+  Shuffle Songs, a Now Playing screen and Settings.
 - **A web interface** for browsing by artist › album › track list, with album
   art and search. You can play music in the browser or send it to any
   receiver and control playback from there. Commands reach the receiver
   instantly. Receivers can be given names ("Kitchen") and have a sleep timer
-  that fades out and pauses.
+  that fades out and pauses. See [The web interface](#the-web-interface).
+- **Up Next.** Every receiver and speaker has a play queue you can see and
+  change from the web interface: "Play next", "Add to Up Next", drag to
+  reorder, remove. Playback can be moved from one room to another (or to
+  your phone) and carries on at the same point.
+- **Playlists, history and alarms.** Make playlists in the web interface;
+  they show up on the receivers too. Plays are counted on every device, for
+  Top 25 and Recently Played. An alarm clock wakes you with music that fades
+  in.
+- **Phones and tablets as receivers.** An old phone or tablet (Fire tablets,
+  iPhones, Android) plugged into a stereo can be a receiver too: open the web
+  interface on it and choose "Use this device as a receiver". See
+  [Phones and tablets as receivers](#phones-and-tablets-as-receivers).
+- **Podcasts.** Subscribe to a podcast's feed and the server downloads new
+  episodes, so the receivers (which can't fetch HTTPS themselves) can play
+  them. Each episode carries on where you left it, on any device. See
+  [Podcasts](#podcasts).
 - **Chromecast and Google speakers.** Chromecasts, Chromecast Audio, Google
   Home and Nest speakers, speaker groups, and speakers and TVs with
   Chromecast built-in show up next to your receivers, and you can send music
@@ -145,6 +162,7 @@ All settings are environment variables.
 | `RIO_WATCH` | `1` | rescan as soon as files change |
 | `RIO_WATCH_POLLING` | `0` | poll for changes instead of using inotify (needed for SMB/NFS-mounted music) |
 | `RIO_CAST` | `1` | find Chromecasts and Google speakers so music can be sent to them (`0` to disable) |
+| `RIO_PODCAST_REFRESH` | `10800` | seconds between checks of podcast feeds for new episodes (`0` = only when asked) |
 | `RIO_CLASSIC_SHOW_COUNTS` | `0` | show "Name (12)" in the original firmware's menus |
 | `RIO_LOG_LEVEL` | `INFO` | `DEBUG` logs every request |
 
@@ -157,6 +175,91 @@ playlists. Album art comes from embedded pictures or from a
 `cover.jpg`/`folder.jpg` file in the album folder. Artist pictures come from an
 `artist.jpg` in the artist's folder (the convention Plex and Kodi use), or
 otherwise from the artist's newest album cover.
+
+## The web interface
+
+- **Now Playing.** Click the cover or title in the player bar (or press
+  <kbd>Q</kbd>) for a full-screen view with a large cover and **Up Next**.
+  Drag songs by their handle to reorder them, tap one to play it, or remove
+  it. The page takes its colours from the cover art.
+- **Song menus.** Right-click a song or album (long-press on a phone, or use
+  the ⋯ button) for Play next, Add to Up Next, Add to playlist, and Go to
+  album or artist.
+- **Play on.** The menu at the top chooses where music goes: this browser,
+  a receiver or a speaker. When you switch while something is playing, you
+  can take it along. The move button in Now Playing and on each receiver card
+  does the same: the queue and the position in the song go to the other
+  player.
+- **Playlists** made here are stored in the data volume (the music folder
+  stays read-only) and appear on the receivers too. Drag to reorder them.
+  `.m3u` playlists from the music folder are listed as well, read-only.
+- **History** lists the Top 25 Most Played and Recently Played songs from
+  every receiver, speaker and browser. A song counts as played once half of
+  it, or four minutes, has been heard.
+- **Alarms** start music on a receiver at a set time, on chosen days, and
+  fade it up to a volume over a few minutes. Times are in the time zone of
+  the browser that set them.
+- **Settings** has a Light / Dark / System theme switch (kept per browser),
+  library rescans and the firmware choice.
+- **Albums** can be sorted by name, artist, year or date added, and **Songs**
+  has an A–Z bar.
+
+Receivers take queue changes without interrupting the song that's playing
+from RioServer NG firmware 1.6 on. A receiver gets new firmware when it
+powers on, so power-cycle your receivers once after updating the server.
+With older firmware the queue is shown but can't be changed.
+
+## Phones and tablets as receivers
+
+An old phone or tablet plugged into a stereo (by cable or Bluetooth) can play
+music like the receivers and speakers do. Open the web interface on it, go to
+**Receivers** and choose **Use this device as a receiver** (the last card).
+Give it a name ("Living Room") and tap **Start**. It then shows up on every
+other device under **Receivers** and **Play on**, with Up Next, moving
+playback, the sleep timer, alarms and podcast resume. Its own screen shows
+Now Playing as a display; the header ("This device · Living Room") has its
+menu, including **Stop being a receiver**.
+
+- **Keep the page open.** Browsers pause pages that aren't on screen, so
+  leave it showing, plugged in. The screen stays on while it's a receiver
+  (on iOS from 16.4). On an iPhone or iPad, Guided Access keeps it on this
+  page.
+- **Set up once.** The device remembers its name: next time, the card on
+  the Receivers page says "Starts as Living Room" and one tap starts it.
+  Rename it from its menu. On an iPhone or iPad, add the web interface to the
+  Home Screen and use it from there: Safari clears what a website stored if
+  it isn't opened for a week, but not for Home Screen apps.
+- **One tap after a restart.** Browsers only play sound after a tap. If the
+  page reloads, it shows the receiver's name: tap once and it carries on
+  where it was.
+- **Volume:** on iPhone and iPad, only the device's buttons (or the stereo)
+  set it; Safari doesn't let pages change it. On Android and Fire tablets it
+  can be set from other devices like any receiver. An alarm's fade-in needs
+  that, so on an iPhone the alarm starts at the device's volume.
+- Songs follow one another without a gap: the next one is loaded while the
+  current one plays.
+- A browser that stopped being a receiver shows as offline; **Forget** on its
+  card removes it.
+
+## Podcasts
+
+Paste a podcast's feed address (the RSS link on its website) under
+**Podcasts**, or import an OPML file from another podcast app. The server
+checks feeds every three hours (`RIO_PODCAST_REFRESH`) and downloads new
+episodes into `/data/podcasts`, keeping the newest three of each show (you
+can change this per show). Episodes you download by hand stay until you've
+played them; played episodes are deleted a day later.
+
+- **On the receiver:** Music › Podcasts › a show › an episode. The menu shows
+  which episodes are new and how much is left of the ones you've started.
+- **Resume anywhere.** Wherever an episode plays (a receiver, a speaker or a
+  browser), the server saves the position every few seconds. Start it on
+  another device and it carries on from there, a couple of seconds back.
+- **MP3 only.** The receivers can only decode MP3, so episodes published
+  only in other formats (AAC/M4A) are listed as unsupported. Nearly all
+  podcasts publish MP3.
+- The server needs internet access to fetch feeds and episodes. Episodes
+  stay out of Artists, Albums and Songs.
 
 ## Chromecast and Google speakers
 
@@ -174,16 +277,18 @@ several networks).
 
 - **Speaker groups** made in the Google Home app show up as a device of
   their own, so music plays in sync across every speaker in the group.
-- **The server keeps the play queue.** The device is given one track at a
-  time, and when it reports that a track has finished the server starts the
-  next one. Expect a short gap between tracks.
+- **The server keeps the play queue.** While a track plays, the device is
+  handed the next one to preload, so it goes straight on without a gap. If
+  you change Up Next after that, the server corrects course when the device
+  moves on. Devices that ignore the preloaded track still get the next one
+  the usual way, after a short gap.
 - **Another app wins.** If someone casts Spotify or YouTube to the device,
   the server's queue for it ends and the card shows the app in use.
 
 ## Firmware
 
 The server can boot receivers into three kinds of firmware. Choose one under
-**Library & Firmware** in the web interface (the choice is remembered), or
+**Settings** in the web interface (the choice is remembered), or
 set `RIO_FIRMWARE`.
 
 ### RioServer NG (default)

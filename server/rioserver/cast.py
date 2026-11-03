@@ -5,8 +5,10 @@ Devices announce themselves over mDNS (_googlecast._tcp). For each one the
 server keeps a connection open (pychromecast) and plays tracks through
 Google's Default Media Receiver: the device is handed the track's
 /api/stream URL with its title, artist and cover, fetches the MP3 from this
-server and reports its progress back. When a track finishes, QueuePlayer
-starts the next one.
+server and reports its progress back. While a track plays, the next one is
+added to the device's own queue with a preload time, so it goes straight on
+without a gap; QueuePlayer follows along (and starts the next track itself
+if the device doesn't).
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ APP_MEDIA_RECEIVER = "CC1AD845"  # Google's Default Media Receiver
 APP_BACKDROP = "E8C28D3C"  # the idle screen / ambient mode, i.e. nothing running
 LAUNCH_GRACE = 15.0  # seconds during which another app's status is from before our launch
 STATES = {"PLAYING": "play", "BUFFERING": "buffer", "PAUSED": "pause", "IDLE": "stop"}
+PRELOAD_SECONDS = 20  # how long before the end of a track the device starts fetching the next
 _STREAM_RE = re.compile(r"/api/stream/(\d+)$")
 
 
@@ -56,6 +59,7 @@ def track_metadata(t: dict, base: str) -> dict:
 
 class CastPlayer(players.QueuePlayer):
     kind = "cast"
+    can_preload = True
 
     def __init__(self, cast_info, cfg, zconf=None):
         model = cast_info.model_name or "Chromecast"
@@ -116,13 +120,32 @@ class CastPlayer(players.QueuePlayer):
             raise ConnectionError("not connected yet")
         self.cc.wait(timeout=10)
 
-    def _device_load(self, track: dict) -> None:
+    def _media(self, track: dict) -> dict:
+        base = self.base
+        return {"contentId": f"{base}/api/stream/{track['id']}", "streamType": "BUFFERED",
+                "contentType": "audio/mpeg", "metadata": track_metadata(track, base)}
+
+    def _device_load(self, track: dict, start_seconds: float = 0.0) -> None:
         self._wait_connected()
         base = self.base
         self._launched_at = time.monotonic()
         self._dmr.play_media(
             f"{base}/api/stream/{track['id']}", "audio/mpeg",
-            stream_type="BUFFERED", metadata=track_metadata(track, base))
+            stream_type="BUFFERED", metadata=track_metadata(track, base),
+            current_time=start_seconds or None)
+
+    def _device_preload(self, track: dict) -> None:
+        """Add the next track to the device's queue, to start when this one ends."""
+        self._wait_connected()
+        status = self.cc.media_controller.status
+        if not status.media_session_id:
+            raise ConnectionError("no media session yet")
+        self._dmr.send_message({
+            "type": "QUEUE_INSERT",
+            "mediaSessionId": status.media_session_id,
+            "items": [{"media": self._media(track), "autoplay": True, "startTime": 0,
+                       "preloadTime": PRELOAD_SECONDS}],
+        }, inc_session_id=True)
 
     def _device_pause(self) -> None:
         self._wait_connected()
@@ -170,8 +193,10 @@ class CastPlayer(players.QueuePlayer):
         if st == "stop":
             self._on_status("stop", 0, tid)
             reason = status.idle_reason
-            if reason in ("FINISHED", "ERROR") and status.media_session_id != self._ended_session:
-                self._ended_session = status.media_session_id
+            # One media session can play several tracks (the device's queue).
+            ended = (status.media_session_id, tid)
+            if reason in ("FINISHED", "ERROR") and ended != self._ended_session:
+                self._ended_session = ended
                 self._on_ended(tid, failed=reason == "ERROR")
         else:
             self._on_status(st, pos, tid)

@@ -144,6 +144,8 @@ static void parse_track_info(char *text, struct track_info *t)
                 t->size = strtoul(val, 0, 10);
             else if (!strcmp(line, "kbps"))
                 t->kbps = atoi(val);
+            else if (!strcmp(line, "start"))
+                t->start_ms = strtoul(val, 0, 10);
         }
         line = next;
     }
@@ -196,7 +198,11 @@ static int start_current(void)
     else
         strlcpy(P.cur.title, "Unknown track", sizeof(P.cur.title));
     reconnects = 0;
-    if (open_stream(0) < 0) {
+    /* A podcast episode carries on where it was left (the server says where). */
+    long from = 0;
+    if (P.cur.start_ms && P.cur.dur_ms && P.cur.size && P.cur.start_ms < P.cur.dur_ms)
+        from = (long)((uint64_t)P.cur.start_ms * P.cur.size / P.cur.dur_ms);
+    if (open_stream(from) < 0) {
         set_status("Can't reach server");
         P.state = P_STOPPED;
         return -1;
@@ -234,14 +240,13 @@ static void shuffle_queue(int keep_current)
     }
 }
 
-int player_play_node(const char *node, int first, int shuffle)
+/* Replace the queue with the track list at `path`. */
+static int load_queue(const char *path)
 {
     int cap = 128 * 1024;
     char *buf = malloc((size_t)cap);
-    char path[200];
     if (!buf)
         return -1;
-    snprintf(path, sizeof(path), "/ng/queue/%s?first=%d&shuffle=%d", node, first, shuffle ? 1 : 0);
     int n = http_get(path, buf, cap, 5000);
     if (n <= 0) {
         free(buf);
@@ -265,6 +270,15 @@ int player_play_node(const char *node, int first, int shuffle)
         line = next;
     }
     free(buf);
+    return P.qlen;
+}
+
+int player_play_node(const char *node, int first, int shuffle)
+{
+    char path[200];
+    snprintf(path, sizeof(path), "/ng/queue/%s?first=%d&shuffle=%d", node, first, shuffle ? 1 : 0);
+    if (load_queue(path) < 0)
+        return -1;
     P.shuffle = shuffle;
     P.qi = 0;
     fail_count = 0;
@@ -273,6 +287,32 @@ int player_play_node(const char *node, int first, int shuffle)
         return -1;
     }
     return start_current();
+}
+
+int player_set_queue(const char *node, int qi, int start, int shuffle)
+{
+    char path[200];
+    snprintf(path, sizeof(path), "/ng/queue/%s", node);
+    if (load_queue(path) < 0)
+        return -1;
+    P.shuffle = shuffle;
+    if (qi >= P.qlen)
+        qi = P.qlen - 1;
+    P.qi = qi < 0 ? 0 : qi;
+    if (!P.qlen) {
+        player_stop();
+        return 0;
+    }
+    if (start) {
+        fail_count = 0;
+        return start_current();
+    }
+    return 0; /* the current track plays on; what follows it has changed */
+}
+
+void player_set_repeat(enum repeat_mode mode)
+{
+    P.repeat = mode;
 }
 
 void player_stop(void)

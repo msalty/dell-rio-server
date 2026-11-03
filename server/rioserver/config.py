@@ -62,6 +62,10 @@ class Config:
     # so the web interface can send music to them.
     cast: bool = True
 
+    # Seconds between checks of podcast feeds for new episodes (0 = only
+    # when asked to in the web interface).
+    podcast_refresh: int = 3 * 3600
+
     # Show "Name (count)" in the stock player's menus, as JReceiver did.
     classic_show_counts: bool = False
 
@@ -87,6 +91,7 @@ class Config:
         c.watch = _env_bool("RIO_WATCH", c.watch)
         c.watch_polling = _env_bool("RIO_WATCH_POLLING", c.watch_polling)
         c.cast = _env_bool("RIO_CAST", c.cast)
+        c.podcast_refresh = _env_int("RIO_PODCAST_REFRESH", c.podcast_refresh)
         c.classic_show_counts = _env_bool("RIO_CLASSIC_SHOW_COUNTS", c.classic_show_counts)
         c.log_level = os.environ.get("RIO_LOG_LEVEL", c.log_level).upper()
         return c

@@ -15,6 +15,7 @@ struct track_info {
     uint32_t dur_ms;
     uint32_t size;
     int kbps;
+    uint32_t start_ms; /* where to start playing (a podcast episode left part-way) */
 };
 
 struct player {
@@ -37,6 +38,11 @@ void player_init(void);
 /* Replace the queue with the tracks of a server menu node and start playing
  * at `first` (an index into that node's track list). */
 int player_play_node(const char *node, int first, int shuffle);
+/* Replace the queue with a node's tracks without interrupting the current
+ * track (the server has changed what follows it); position at `qi`, and
+ * start playing that track if `start`. */
+int player_set_queue(const char *node, int qi, int start, int shuffle);
+void player_set_repeat(enum repeat_mode mode);
 void player_toggle(void);
 void player_pause(void);
 void player_resume(void);

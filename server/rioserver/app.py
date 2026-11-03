@@ -9,11 +9,14 @@ from pathlib import Path
 
 from aiohttp import web
 
+from .alarms import AlarmClock
 from .cast import CastDiscovery
 from .config import Config
 from .firmware import FirmwareStore
+from .history import PlayTracker
 from .library import Library
 from .nfs import BootServer
+from .podcasts import Podcasts
 from .receivers import ReceiverRegistry
 from .rio_classic import ClassicProtocol
 from .rio_ng import NGProtocol
@@ -33,13 +36,18 @@ class Context:
     receivers: ReceiverRegistry
     watcher: LibraryWatcher | None = None
     firmware: FirmwareStore | None = None
+    tracker: PlayTracker | None = None
+    podcasts: Podcasts | None = None
+    alarms: AlarmClock | None = None
+    web: WebAPI | None = None
 
 
 def build_app(ctx: Context) -> web.Application:
     app = web.Application(client_max_size=1024 * 1024)
     app.router.add_routes(ClassicProtocol(ctx).routes())
     app.router.add_routes(NGProtocol(ctx).routes())
-    app.router.add_routes(WebAPI(ctx).routes())
+    ctx.web = WebAPI(ctx)
+    app.router.add_routes(ctx.web.routes())
 
     async def index(request: web.Request) -> web.FileResponse:
         return web.FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
@@ -102,6 +110,10 @@ async def run(cfg: Config) -> None:
     ctx = Context(cfg, library, ReceiverRegistry(cfg.data_dir / "receivers.json"))
     ctx.watcher = LibraryWatcher(library, cfg.rescan_interval, cfg.watch, cfg.watch_polling)
     ctx.watcher.start()
+    ctx.podcasts = Podcasts(library, cfg.data_dir, cfg.podcast_refresh)
+    ctx.tracker = PlayTracker(library, ctx.podcasts)
+    ctx.receivers.start_position = ctx.tracker.start_position
+    ctx.alarms = AlarmClock(cfg.data_dir / "alarms.json", lambda alarm: ctx.web.fire_alarm(alarm))
 
     closers = []
     if cfg.enable_boot:
@@ -141,6 +153,9 @@ async def run(cfg: Config) -> None:
         log.error("could not bind SSDP port %d: %s", cfg.ssdp_port, exc)
 
     app = build_app(ctx)
+    ctx.podcasts.start()
+    ctx.tracker.start(ctx.receivers)
+    ctx.alarms.start()
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     for port in cfg.http_ports:
@@ -152,6 +167,9 @@ async def run(cfg: Config) -> None:
         await asyncio.Event().wait()
     finally:
         ctx.watcher.stop()
+        ctx.alarms.close()
+        ctx.tracker.close()
+        await ctx.podcasts.close()
         ctx.receivers.close()
         for c in closers:
             c.close()

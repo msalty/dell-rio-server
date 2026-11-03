@@ -2,9 +2,10 @@
 
 It speaks enough of the Cast v2 protocol (TLS, length-prefixed protobuf
 messages carrying JSON) for pychromecast to connect, launch the Default
-Media Receiver and load, pause, seek and stop media. Loaded URLs are fetched
-like a real device would, so the tests see whether the server handed out a
-working stream URL. The test drives the "end of track" and "another app took
+Media Receiver and load, pause, seek and stop media, and to queue a next
+track (QUEUE_INSERT) that it goes on to when the current one ends. Loaded
+and queued URLs are fetched like a real device would, so the tests see
+whether the server handed out a working stream URL. The test drives the "end of track" and "another app took
 over" events itself.
 """
 
@@ -58,6 +59,8 @@ class FakeChromecast:
         self.player_state = "IDLE"
         self.idle_reason: str | None = None
         self.current_time = 0.0
+        self.queued: list[dict] = []  # items added with QUEUE_INSERT, played next
+        self.follow_queue = True  # False: ignore the queue, like a device that can't
         self.received: list[dict] = []  # every non-heartbeat payload, in order
         self.fetched: list[tuple[str, int, str]] = []  # (url, status, content type)
         self.lock = threading.Lock()
@@ -84,7 +87,12 @@ class FakeChromecast:
 
     # -- things the test makes happen ------------------------------------
     def finish_track(self) -> None:
-        self.player_state, self.idle_reason, self.current_time = "IDLE", "FINISHED", 0.0
+        if self.queued and self.follow_queue:
+            # Straight on to the queued track, in the same media session.
+            self.media = self.queued.pop(0)["media"]
+            self.player_state, self.idle_reason, self.current_time = "PLAYING", None, 0.0
+        else:
+            self.player_state, self.idle_reason, self.current_time = "IDLE", "FINISHED", 0.0
         self._media_status(0)
 
     def take_over(self, app_id: str | None, name: str) -> None:
@@ -166,9 +174,14 @@ class FakeChromecast:
                 if kind == "LOAD":
                     self.session += 1
                     self.media = p["media"]
+                    self.queued = []
                     self.player_state, self.idle_reason = "PLAYING", None
                     self.current_time = p.get("currentTime") or 0.0
                     threading.Thread(target=self._fetch, args=(self.media["contentId"],), daemon=True).start()
+                elif kind == "QUEUE_INSERT":
+                    self.queued.extend(p["items"])
+                    for item in p["items"]:
+                        threading.Thread(target=self._fetch, args=(item["media"]["contentId"],), daemon=True).start()
                 elif kind == "PAUSE":
                     self.player_state = "PAUSED"
                 elif kind == "PLAY":
