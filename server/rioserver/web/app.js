@@ -642,7 +642,7 @@ function nowState() {
       // an offline receiver isn't playing, whatever it last reported
       t, playing: !!r && r.online && rxPlaying(st), remote: true, r, st,
       shuffle: st.shuf === "1", repeat: st.rep || "off",
-      sub: t ? `${t.artist} — ${t.album}` : (r ? `${r.name} · ${!r.online ? "offline" : st.app ? `in use by ${st.app}` : "idle"}` : ""),
+      sub: t ? `${t.artist} — ${t.album}` : (r ? `${r.name} · ${!r.online ? "offline" : st.live ? liveText(st.live) : st.app ? `in use by ${st.app}` : "idle"}` : ""),
     };
   }
   const t = Player.current;
@@ -671,7 +671,8 @@ function renderWherePill(ns) {
   const r = ns.r;
   const self = RX.on && Player.target === RX.id;
   const name = self ? `This device · ${RX.name}` : r ? r.name : "Receiver";
-  const trouble = !r || !r.online ? "offline" : ns.st && ns.st.app ? `in use by ${ns.st.app}` : "";
+  const trouble = !r || !r.online ? "offline" : ns.st && ns.st.live ? liveText(ns.st.live, false)
+    : ns.st && ns.st.app ? `in use by ${ns.st.app}` : "";
   const label = trouble ? `${name} · ${trouble}` : name;
   if (pill.dataset.label === label) return;
   pill.dataset.label = label;
@@ -2176,11 +2177,20 @@ function receiverMeta(rx) {
   return `${rx.model} · ${rx.ip}`;
 }
 
+// An AirPlay or Spotify session playing on a receiver: "AirPlay from iPhone · Song – Artist".
+function liveText(live, withTrack = true) {
+  if (!live) return "";
+  const from = `${live.app}${live.sender ? ` from ${live.sender}` : ""}`;
+  const song = [live.title, live.artist].filter(Boolean).join(" – ");
+  return withTrack && song ? `${from} · ${song}` : from;
+}
+
 function receiverIdle(rx) {
   if (rx.kind === "rio" && rx.firmware === "stock") {
     return "Browsing with the original firmware. Switch to RioServer NG firmware for remote control.";
   }
   if (!rx.online) return `Last seen ${new Date(rx.last_seen * 1000).toLocaleString()}`;
+  if (rx.state && rx.state.live) return liveText(rx.state.live);
   return rx.state && rx.state.app ? `In use by ${rx.state.app}` : "Idle";
 }
 
@@ -2228,6 +2238,21 @@ function receiverCard(id) {
       .map(([v, label]) => h("option", { value: v }, label)));
   const sleepRow = h("div", { class: "sleep-row" }, h("span", { html: ICON.moon, style: "display:inline-flex;color:var(--muted)" }), sleep, sleepInfo);
   const ctrl = h("div", { class: "controls" }, transport, volRow, sleepRow);
+  // AirPlay and Spotify Connect speakers (NG receivers, when the server has them)
+  const speakerSwitch = (kind, label) => {
+    const input = h("input", { type: "checkbox", "aria-label": label, onchange: (e) =>
+      post(`/api/receivers/${id}/speakers`, { [kind]: e.target.checked })
+        .then(() => { toast(e.target.checked ? `${r().name} is now a ${label} speaker` : `${label} off for ${r().name}`); pollReceivers(); })
+        .catch((err) => { e.target.checked = !e.target.checked; fail(err); }) });
+    const row = h("label", { class: "speaker-row" }, h("span", { class: "switch" }, input, h("span")), h("span", {}, label));
+    return { input, row };
+  };
+  const airplaySw = speakerSwitch("airplay", "AirPlay");
+  const spotifySw = speakerSwitch("spotify", "Spotify Connect");
+  const speakerNote = h("div", { class: "meta" });
+  const speakerBox = h("div", { class: "speakers" }, airplaySw.row, spotifySw.row, speakerNote);
+  const resume = h("button", { class: "btn small", onclick: () => post(`/api/receivers/${id}/resume`)
+    .then(() => { toast("Resuming Up Next"); setTimeout(pollReceivers, 350); }).catch(fail) }, icon("play"), "Resume Up Next");
   const send = h("button", {
     class: "btn send",
     onclick: () => { setTarget(id); toast(`Music goes to ${r().name}`); },
@@ -2235,7 +2260,7 @@ function receiverCard(id) {
   const mine = h("span", { class: "tag" }, "This device");
   const forget = h("button", { class: "btn small", onclick: () => del(`/api/receivers/${id}`)
     .then(() => { receiverCards.delete(id); pollReceivers(); }).catch(fail) }, "Forget");
-  const el = h("div", { class: "card" }, h("h3", {}, dot, name, mine, rename), meta, now, ctrl, send, forget);
+  const el = h("div", { class: "card" }, h("h3", {}, dot, name, mine, rename), meta, now, ctrl, resume, send, speakerBox, forget);
   let playIcon = null, artKey = null;
   const thumb = h("div", { class: "thumb", title: "Open Now Playing", onclick: () => { setTarget(id); NowPlaying.open(); } });
   const info = h("div", { class: "info" });
@@ -2243,26 +2268,50 @@ function receiverCard(id) {
   function update(rx) {
     const st = rx.state || {};
     const t = st.track;
+    const lv = st.live;
     dot.className = `dot ${rx.online ? "on" : ""}`;
     name.textContent = rx.name;
     meta.textContent = receiverMeta(rx);
-    const key = t ? String(t.album_id) : "";
+    const key = t ? String(t.album_id) : lv ? `live:${lv.art || ""}` : "";
     if (artKey !== key) {
       artKey = key;
-      thumb.replaceChildren(t ? cover(t.album_id, t.album) : "");
-      tintFrom(now, t ? albumArtUrl(t.album_id) : null);
+      const art = t ? albumArtUrl(t.album_id) : lv && lv.art ? lv.art : null;
+      thumb.replaceChildren(t ? cover(t.album_id, t.album) : lv ? cover(null, lv.title || lv.app, null, lv.art || undefined) : "");
+      tintFrom(now, art);
     }
     info.replaceChildren(...(t
       ? [h("div", { class: "t" }, t.title), h("div", { class: "meta" }, `${t.artist} — ${t.album}`),
         h("div", { class: "meta" }, `${STATE_NAMES[st.st] || st.st} · ${fmtTime(st.pos)} / ${fmtTime(t.duration_ms)}${st.qn ? ` · track ${Number(st.qi) + 1} of ${st.qn}` : ""}`)]
-      : [h("div", { class: "meta" }, receiverIdle(rx))]));
+      : lv
+        ? [h("div", { class: "t" }, lv.title || liveText(lv, false)),
+          h("div", { class: "meta" }, [lv.artist, lv.album].filter(Boolean).join(" — ")),
+          h("div", { class: "meta" }, `${liveText(lv, false)}${lv.paused ? " · Paused" : ""}`)]
+        : [h("div", { class: "meta" }, receiverIdle(rx))]));
     if (!now.children.length) now.append(thumb, info);
-    thumb.hidden = !t;
+    thumb.hidden = !t && !lv;
     ctrl.hidden = !rx.controllable;
+    // While AirPlay or Spotify plays, only Stop and the volume work here.
+    for (const b of transport.querySelectorAll("button")) {
+      if (b !== moveBtn) b.hidden = !!lv && b.getAttribute("aria-label") !== "Stop";
+    }
+    resume.hidden = !rx.resumable || !rx.online;
+    const sp = rx.speakers;
+    const offered = sp && (sp.available.airplay || sp.available.spotify);
+    speakerBox.hidden = !offered;
+    if (offered) {
+      airplaySw.row.hidden = !sp.available.airplay;
+      spotifySw.row.hidden = !sp.available.spotify;
+      if (document.activeElement !== airplaySw.input) airplaySw.input.checked = sp.airplay;
+      if (document.activeElement !== spotifySw.input) spotifySw.input.checked = sp.spotify;
+      speakerNote.textContent = sp.needs_update && (sp.airplay || sp.spotify)
+        ? "Power-cycle this receiver to load firmware 1.8, which AirPlay and Spotify need."
+        : sp.spotify ? "Spotify Connect needs Spotify Premium." : "";
+    }
     volRow.hidden = rx.volume === false; // Safari on iPhone/iPad: only the device's buttons set it
     mine.hidden = rx.id !== RX.id;
     forget.hidden = !(rx.kind === "browser" && !rx.online);
     moveBtn.hidden = !t;
+    thumb.title = lv ? "" : "Open Now Playing";
     const left = rx.sleep_at ? Math.max(1, Math.round((rx.sleep_at * 1000 - Date.now()) / 60000)) : 0;
     sleepInfo.textContent = left ? `Stops in ${plural(left, "minute")}` : "";
     if (!left && document.activeElement !== sleep) sleep.value = "0";
