@@ -422,11 +422,114 @@ async def test_a_browser_that_gives_up_on_the_stream_ends_the_session(client):
     await wait_for(lambda: len(starts(client, "spotify-0")) == 2)
 
 
-async def test_chromecasts_are_not_offered_as_speakers(client):
-    from rioserver.players import QueuePlayer
+# ---- Chromecasts and Google speakers ----------------------------------------
 
-    class Speaker(QueuePlayer):
-        kind = "cast"
-    client.ctx.receivers.add(Speaker("cast-1", "Kitchen speaker", "10.0.0.9"))
-    resp = await client.post("/api/receivers/cast-1/speakers", json={"airplay": True})
-    assert resp.status == 400
+@pytest.fixture()
+async def cast_client(library, tmp_path, monkeypatch):
+    """A fake Chromecast (the real Cast protocol) next to fake AirPlay and
+    Spotify processes."""
+    from rioserver.cast import CastDiscovery
+    from tests.fake_cast import FakeChromecast
+
+    monkeypatch.setattr(speakers, "RECONCILE_SECONDS", 0.2)
+    fakes = tmp_path / "fakes"
+    fakes.mkdir()
+    monkeypatch.setenv("FAKE_SPEAKER_DIR", str(fakes))
+    bins = {}
+    for kind in ("shairport", "librespot"):
+        p = tmp_path / f"fake-{kind}"
+        p.write_text(f"#!/bin/sh\nexec '{sys.executable}' '{FAKE}' {kind} \"$@\"\n")
+        p.chmod(0o755)
+        bins[kind] = str(p)
+    device = FakeChromecast(tmp_path)
+    cfg = Config(data_dir=tmp_path, server_ip="127.0.0.1", shairport_bin=bins["shairport"],
+                 librespot_bin=bins["librespot"])
+    ctx = Context(cfg, library, ReceiverRegistry())
+    zc = FakeZeroconf()
+    ctx.speakers = Speakers(cfg, ctx.receivers, zc)
+    await ctx.speakers.start()
+    async with TestClient(TestServer(build_app(ctx))) as c:
+        cfg.http_port = c.server.port
+        CastDiscovery(cfg, ctx.receivers, asyncio.get_running_loop())._add(device.cast_info())
+        player = ctx.receivers.get(f"cast-{device.uuid}")
+        await wait_for(lambda: player.online)
+        c.ctx, c.zc, c.fakes, c.device, c.player = ctx, zc, fakes, device, player
+        try:
+            yield c
+        finally:
+            await ctx.speakers.close()
+            ctx.receivers.close()
+            device.close()
+
+
+def live_loads(device) -> list[dict]:
+    return [p for p in device.received if p["type"] == "LOAD" and p["media"]["streamType"] == "LIVE"]
+
+
+async def test_a_chromecast_is_an_airplay_speaker_too(cast_client, library):
+    c, device, pid = cast_client, cast_client.device, cast_client.player.id
+
+    async def offered():
+        r = next(x for x in await api(c, "/api/receivers") if x["id"] == pid)
+        return r["speakers"]
+    assert (await wait_for(offered))["airplay"] is False
+    await api(c, f"/api/receivers/{pid}/speakers", {"airplay": True})
+    await wait_for(lambda: "ABCDEF012345@Kitchen speaker._raop._tcp.local." in c.zc.registered)
+
+    # it was playing an album; AirPlay takes over and the album can be resumed
+    album = library.albums()[0]["id"]
+    await api(c, f"/api/receivers/{pid}/play", {"album_id": album})
+    await wait_for(lambda: c.player.state["st"] == "play")
+    await control(c, "airplay-0", play=60, title="Song", artist="Artist", album="Album", sender="Anna's iPhone")
+
+    # the device is handed the live stream with the song's details, and fetches it from us
+    load = (await wait_for(lambda: live_loads(device)))[0]
+    base = f"http://127.0.0.1:{c.server.port}"
+    media = load["media"]
+    assert media["contentId"] == f"{base}/live/{pid}" and media["contentType"] == "audio/mpeg"
+    meta = media["metadata"]
+    assert (meta["title"], meta["artist"], meta["albumName"]) == ("Song", "Artist", "Album")
+    assert meta["images"][0]["url"].startswith(f"{base}/api/receivers/")
+    await wait_for(lambda: any(u == media["contentId"] and code == 200 and ctype == "audio/mpeg"
+                               for u, code, ctype in device.fetched))
+    await wait_for(lambda: c.ctx.speakers.sessions[pid].confirmed)
+    assert c.ctx.speakers.streams[pid].bitrate == 320
+    r = next(x for x in await api(c, "/api/receivers") if x["id"] == pid)
+    assert r["state"]["app"] == "AirPlay" and r["state"]["live"]["title"] == "Song" and r["queue_saved"]
+    assert not c.player._other_app  # our own stream isn't "another app"
+
+    # the phone's volume reaches the device
+    await wait_for(lambda: abs(device.volume - 0.5) < 0.01)
+
+    # Stop in the web interface ends it, disconnects the phone, and the album can come back
+    await api(c, f"/api/receivers/{pid}/command", {"cmd": "stop"})
+    await wait_for(lambda: device.player_state == "IDLE")
+    assert pid not in c.ctx.speakers.sessions
+    await wait_for(lambda: len(starts(c, "airplay-0")) == 2)
+    r = next(x for x in await api(c, "/api/receivers") if x["id"] == pid)
+    assert r["resumable"]
+
+
+async def test_another_app_on_the_chromecast_ends_the_session(cast_client):
+    c, device, pid = cast_client, cast_client.device, cast_client.player.id
+    await api(c, f"/api/receivers/{pid}/speakers", {"airplay": True})
+    await control(c, "airplay-0", play=60, title="Song", artist="Artist")
+    await wait_for(lambda: live_loads(device))
+    await wait_for(lambda: c.ctx.speakers.sessions[pid].confirmed)
+    c.player._launched_at -= 60  # well after our launch
+    device.take_over("233637DE", "YouTube")
+    await wait_for(lambda: pid not in c.ctx.speakers.sessions)
+    await wait_for(lambda: len(starts(c, "airplay-0")) == 2)
+    r = next(x for x in await api(c, "/api/receivers") if x["id"] == pid)
+    assert r["state"].get("app") == "YouTube"
+
+
+async def test_a_chromecast_offers_only_airplay(cast_client):
+    """Chromecasts have Spotify Connect built in; a second entry would only confuse."""
+    c, pid = cast_client, cast_client.player.id
+    await api(c, f"/api/receivers/{pid}/speakers", {"airplay": True, "spotify": True})
+    await wait_for(lambda: (c.fakes / "airplay-0.ctl").exists())
+    r = next(x for x in await api(c, "/api/receivers") if x["id"] == pid)
+    assert r["speakers"]["available"]["spotify"] is False and r["speakers"]["spotify"] is False
+    await asyncio.sleep(0.6)
+    assert not (c.fakes / "spotify-0.log").exists()

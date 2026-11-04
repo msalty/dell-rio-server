@@ -2379,6 +2379,7 @@ function receiverCard(id) {
       speakerNote.textContent = sp.needs_update && (sp.airplay || sp.spotify)
         ? "Power-cycle this receiver to load firmware 1.8, which AirPlay and Spotify need."
         : [rx.kind === "browser" && (sp.airplay || sp.spotify) ? "Only while the receiver page is open on that device." : "",
+          rx.kind === "cast" && sp.airplay ? "Plays a few seconds behind the phone." : "",
           sp.spotify ? "Spotify Connect needs Spotify Premium." : ""].filter(Boolean).join(" ");
     }
     volRow.hidden = rx.volume === false; // Safari on iPhone/iPad: only the device's buttons set it

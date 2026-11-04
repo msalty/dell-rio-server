@@ -321,7 +321,16 @@ until one is switched on. Renaming the receiver renames its speakers.
   AirPlay and Spotify speakers too, with the same switches on their card.
   They get a 320 kbps stream. The speaker is there only while the receiver
   page is open on that device; it is withdrawn a minute after the page
-  closes. Chromecasts can't be AirPlay or Spotify speakers this way.
+  closes.
+- **Chromecasts, Google speakers and speaker groups** can be AirPlay
+  speakers (their card has an AirPlay switch). The server casts the session
+  to them as a live stream they fetch from port 12078, so a speaker group
+  plays AirPlay in sync. They buffer more, so the sound comes a few seconds
+  later than on a receiver. A screen (Nest Hub, a TV) keeps showing the song
+  the session started with: Google's media player can't be told about the
+  next one without a gap in the sound. Another app cast to the device ends
+  the session. They have Spotify Connect built in, so they get no Spotify
+  switch.
 - **Spotify Connect needs Spotify Premium.** The phone's Spotify app signs
   the speaker in when you pick it, so the server stores no Spotify login and
   anyone in the house can use it.

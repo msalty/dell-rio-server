@@ -153,6 +153,12 @@ From the plan, plus what I couldn't check here:
       page: within about a minute the speaker disappears from the phone's
       list. On an iPhone or iPad used as the receiver, the sending phone's
       volume can't change the page's volume (a Safari restriction).
+- [ ] **A Chromecast or Google speaker as an AirPlay speaker.** Switch
+      AirPlay on on its card, play to it from an iPhone: it should play
+      within a few seconds, with the song on a Nest Hub's or TV's screen.
+      Try a speaker group from the Google Home app too, and check whether
+      the later songs' titles not updating on a screen is acceptable. Note
+      the delay. Casting another app to it should end the session.
 - [ ] Turning both switches off stops the processes (`docker top <container>`
       no longer lists shairport-sync or librespot).
 
@@ -196,6 +202,13 @@ Verified in this environment:
   Resume Up Next, a page that gives up), and a headless Chromium in receiver
   mode played an AirPlay session from the fake shairport-sync in real time
   through its `<audio>` element and showed it on its display.
+- **Chromecasts as AirPlay speakers:** tests drive the fake Chromecast
+  over the real Cast protocol (pychromecast): it is handed a LIVE stream of
+  `/live/<id>` with the song's details and cover, fetches it from the server,
+  the session is confirmed from its media status, its volume follows the
+  phone, Stop ends it, the queue it replaced can be resumed, another app
+  cast to it ends the session, and it offers no Spotify switch. Not tried on
+  a real Chromecast.
 - **Source stalls:** a test stalls the source for 0.8 s and checks listeners
   still get exactly real time (the previous pacer came up 0.4 s short), and
   the qemu test stalls the fake AirPlay source for 1 s without the receiver

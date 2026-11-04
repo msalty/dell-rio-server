@@ -67,7 +67,7 @@ RESTART_DELAYS = (2, 5, 15, 30, 60)  # after a process exits unexpectedly
 META_SETTLE = 0.25  # seconds to gather metadata changes into one "meta" command
 AIRPLAY_PORT_STRIDE = 16
 NAME_LIMIT = 40
-BROWSER_BITRATE = 320  # kbps: browsers have CPU to spare, unlike the Rio
+BROWSER_BITRATE = 320  # kbps for browsers and cast devices, which have CPU to spare, unlike the Rio
 BROWSER_GRACE = 60  # seconds a browser may be gone (a reload) before its speakers are withdrawn
 
 
@@ -78,8 +78,11 @@ def stream_id(r) -> str:
 
 
 def can_be_speaker(r) -> bool:
-    """Rio receivers on NG firmware, and browsers used as receivers."""
-    return (isinstance(r, Receiver) and r.firmware == "ng") or isinstance(r, BrowserPlayer)
+    """Rio receivers on NG firmware, browsers used as receivers, and
+    Chromecasts and Google speakers (cast.py)."""
+    from .cast import CastPlayer
+
+    return (isinstance(r, Receiver) and r.firmware == "ng") or isinstance(r, (BrowserPlayer, CastPlayer))
 
 
 def _conf_string(s: str) -> str:
@@ -414,11 +417,17 @@ class Speakers:
     def available(self) -> dict:
         return {"airplay": bool(self.shairport_bin), "spotify": bool(self.librespot_bin)}
 
+    def kinds(self, r) -> tuple[str, ...]:
+        """What r can be: Chromecasts already have Spotify Connect built in."""
+        return ("airplay",) if getattr(r, "kind", "") == "cast" else KINDS
+
     def view(self, r) -> dict:
         s = self.settings.get(r.key, {})
         ver = firmware_version(r.state.get("ver")) if isinstance(r, Receiver) else ()
-        return {"airplay": bool(s.get("airplay")), "spotify": bool(s.get("spotify")),
-                "available": self.available(),
+        avail = self.available()
+        avail = {k: avail[k] and k in self.kinds(r) for k in KINDS}
+        return {"airplay": bool(s.get("airplay")), "spotify": bool(s.get("spotify")) and "spotify" in self.kinds(r),
+                "available": avail,
                 "needs_update": bool(ver) and ver < LIVE_FIRMWARE}
 
     def refresh(self, r) -> None:
@@ -426,12 +435,14 @@ class Speakers:
         if can_be_speaker(r):
             r.speakers = self.view(r)
             r.resumable = r.key in self.saved
-        if isinstance(r, BrowserPlayer) and r.live_report is None:
-            r.live_report = lambda live, r=r: self.polled(r, "1" if live else "0")
+        if can_be_speaker(r) and not isinstance(r, Receiver) and r.live_report is None:
+            # Cast devices report from pychromecast's thread: hand over to the loop.
+            loop = asyncio.get_running_loop()
+            r.live_report = lambda live, r=r: loop.call_soon_threadsafe(self.polled, r, "1" if live else "0")
 
     def configure(self, r, **switches) -> None:
         s = self.settings.setdefault(r.key, {})
-        for kind in KINDS:
+        for kind in self.kinds(r):
             if kind in switches:
                 s[kind] = bool(switches[kind])
         if "slot" not in s and any(s.get(k) for k in KINDS):
@@ -516,10 +527,10 @@ class Speakers:
                 if firmware_version(r.state.get("ver")) < LIVE_FIRMWARE or now - r.last_seen > OFFLINE_GRACE:
                     continue
             elif not r.online and now - r.last_seen > BROWSER_GRACE:
-                continue  # a page that has closed can't play
+                continue  # a page that has closed, or a speaker that's gone, can't play
             near = r.ip if r.ip and not r.ip.startswith("127.") else ""
             ip = self.cfg.server_ip or local_ip_for(near)
-            for kind in KINDS:
+            for kind in self.kinds(r):
                 if s.get(kind) and avail[kind]:
                     want[(r.key, kind)] = (r.name[:NAME_LIMIT], int(s.get("slot", 0)), ip)
         return want
@@ -573,8 +584,8 @@ class Speakers:
     def stream(self, key: str) -> LiveStream:
         st = self.streams.get(key)
         if st is None:
-            browser = isinstance(self.registry.get(key), BrowserPlayer)
-            st = self.streams[key] = LiveStream(key, BROWSER_BITRATE if browser else self.cfg.live_bitrate)
+            rio = isinstance(self.registry.get(key), Receiver)
+            st = self.streams[key] = LiveStream(key, self.cfg.live_bitrate if rio else BROWSER_BITRATE)
             st.on_change.append(lambda changed, key=key: self._meta_changed(key, changed))
         return st
 
@@ -639,6 +650,15 @@ class Speakers:
             if isinstance(r, Receiver):
                 self.registry.command(r, "live", f"/live/{sid}", self._label(key))
             else:
+                if not isinstance(r, BrowserPlayer):
+                    # A cast device shows what it's given at the start and can't
+                    # be told later: give the song's details a moment to arrive.
+                    for _ in range(15):
+                        if st.meta.get("title") or self._session_kind(key) is None:
+                            break
+                        await asyncio.sleep(0.1)
+                    if self._session_kind(key) is None:
+                        return
                 r.play_live(f"/live/{sid}", self._info(key))
             self._send_meta(key)
         asyncio.ensure_future(go())
