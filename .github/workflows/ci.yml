@@ -30,3 +30,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build image
         run: docker build -t rioserver-ng .
+      - name: Check the AirPlay and Spotify programs run in the image
+        run: docker run --rm rioserver-ng sh -c 'shairport-sync -V && librespot --version && lame --version | head -1'
