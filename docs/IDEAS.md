@@ -66,3 +66,51 @@ It would reach devices a browser receiver can't (no screen needed, playback
 survives the device sleeping, AV gear and TVs), but not iPhones or iPads.
 Renderers differ in the details, gapless especially, so it needs testing
 device by device.
+
+## Download albums for offline play on phones (an opt-in setting)
+
+**The idea.** On a phone, download albums and playlists from the web
+interface so they play with no connection: in the car, at the gym, on a
+flight, or when a remote connection (for example over Tailscale) drops.
+Only worth it for people who play this library away from home; at home,
+streaming already works.
+
+**How it would work** (in `server/rioserver/web/app.js` and
+`server/rioserver/web/sw.js`, no server changes needed for the core):
+
+1. **A per-device toggle in Settings**, kept in the browser like the theme.
+   Off by default; when off there are no download buttons and `sw.js`
+   behaves exactly as today. Turning it off offers to delete the downloads.
+2. **"Download album / playlist"** fetches each `/api/stream/{id}` (plus the
+   album JSON and cover art) into the Cache API, with progress. Call
+   `navigator.storage.persist()` so the browser doesn't clear it when space
+   runs low.
+3. **Cache-first streaming in `sw.js`** for `/api/stream/*`. `<audio>` asks for
+   byte ranges (`Range:`) to seek, and Safari does even for normal playback,
+   so the service worker must slice the cached file and answer with a
+   `206 Partial Content`. Without that, seeking breaks and Safari may refuse
+   to play.
+4. **A "Downloaded" view** that opens without the server, with the
+   server-only features (receivers, Chromecast, search, handoff) hidden
+   when it can't be reached.
+
+**Rough size.** Steps 1–3 are about 250–350 lines of JS. Step 4 is the
+expensive part, because every view currently assumes the server answers
+`api()`; a simple Downloaded view gets most of the value without making the
+whole app work offline.
+
+**Later, if it matters:** keep plays made offline on the phone and send them
+when it reconnects, so Top 25 and Recently Played count them; re-download
+files whose tags changed; show storage used.
+
+**Things to check first:**
+
+- **HTTPS is required.** Browsers only run service workers over HTTPS or on
+  `localhost`, so over plain `http://<server>:8080/` the option has to be
+  greyed out with a note saying why.
+- **iPhone and iPad:** the app must be added to the Home Screen; in a Safari
+  tab, stored data can be cleared after about 7 days without a visit, and
+  the storage allowance is smaller than on Android. Needs testing on a real
+  device.
+- An album is typically 50–150 MB, so dozens of albums fit, not a whole
+  library.
