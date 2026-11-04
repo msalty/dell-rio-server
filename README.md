@@ -40,6 +40,10 @@ RioServer NG runs in Docker. It provides:
   Home and Nest speakers, speaker groups, and speakers and TVs with
   Chromecast built-in show up next to your receivers, and you can send music
   to them the same way. See [Chromecast and Google speakers](#chromecast-and-google-speakers).
+- **AirPlay and Spotify Connect.** Each receiver can show up as a speaker in
+  an iPhone's AirPlay menu and in Spotify's device picker, so a phone can
+  play to "Kitchen" directly. Off until you switch it on per receiver. See
+  [AirPlay and Spotify Connect](#airplay-and-spotify-connect).
 - **Automatic library updates.** Music added to, changed in or removed from
   the mounted folder shows up within seconds. A periodic rescan catches
   anything the file watcher misses.
@@ -131,7 +135,13 @@ and no browser bars:
   | 2049/udp+tcp | NFS (network boot) |
   | 12078/tcp | Rio music protocol, the web interface, and the music Chromecasts fetch |
   | 8080/tcp | web interface |
-  | 5353/udp | finding Chromecasts (mDNS) |
+  | 5353/udp | finding Chromecasts, and advertising AirPlay and Spotify speakers (mDNS) |
+  | 5100 + 16·n /tcp, the next 10 /udp | AirPlay speaker of the n-th receiver it's switched on for (n = 0, 1, …): 5100 and 5101–5110 for the first |
+  | 5300 + n /tcp | Spotify Connect speaker of the n-th receiver |
+
+  The AirPlay and Spotify ports are only used for receivers they are
+  switched on for; move them with `RIO_AIRPLAY_PORT_BASE` and
+  `RIO_SPOTIFY_PORT_BASE`.
 
   The server also sends small UDP datagrams to port 21076 on NG receivers,
   so they act on web-interface commands at once, and connects to cast
@@ -162,6 +172,11 @@ All settings are environment variables.
 | `RIO_WATCH` | `1` | rescan as soon as files change |
 | `RIO_WATCH_POLLING` | `0` | poll for changes instead of using inotify (needed for SMB/NFS-mounted music) |
 | `RIO_CAST` | `1` | find Chromecasts and Google speakers so music can be sent to them (`0` to disable) |
+| `RIO_AIRPLAY` | `1` | offer AirPlay speakers (switched on per receiver in the web interface); `0` turns the feature off |
+| `RIO_SPOTIFY` | `1` | offer Spotify Connect speakers (switched on per receiver); `0` turns the feature off |
+| `RIO_AIRPLAY_PORT_BASE` | `5100` | first port for AirPlay speakers (16 per receiver) |
+| `RIO_SPOTIFY_PORT_BASE` | `5300` | first port for Spotify Connect speakers (1 per receiver) |
+| `RIO_LIVE_BITRATE` | `160` | bitrate (kbps, constant) of the MP3 stream receivers play AirPlay and Spotify from |
 | `RIO_PODCAST_REFRESH` | `10800` | seconds between checks of podcast feeds for new episodes (`0` = only when asked) |
 | `RIO_CLASSIC_SHOW_COUNTS` | `0` | show "Name (12)" in the original firmware's menus |
 | `RIO_LOG_LEVEL` | `INFO` | `DEBUG` logs every request |
@@ -284,6 +299,48 @@ several networks).
   the usual way, after a short gap.
 - **Another app wins.** If someone casts Spotify or YouTube to the device,
   the server's queue for it ends and the card shows the app in use.
+
+## AirPlay and Spotify Connect
+
+A receiver can be an **AirPlay** speaker (it appears in the AirPlay menu of
+iPhones, iPads and Macs) and a **Spotify Connect** speaker (it appears in the
+Spotify app's device picker), named after the receiver. Pick "Kitchen" on the
+phone and the music plays on the Kitchen receiver.
+
+**Turning it on.** Under **Receivers**, each receiver's card has AirPlay and
+Spotify Connect switches. Both are off to begin with, and nothing extra runs
+until one is switched on. Renaming the receiver renames its speakers.
+`RIO_AIRPLAY=0` and `RIO_SPOTIFY=0` take the feature away altogether.
+
+- **Only receivers running the RioServer NG firmware 1.8 or later** take
+  part. Power-cycle a receiver once after updating the server so it loads the
+  new firmware; its card says so if it hasn't yet. Receivers on the original
+  SonicBlue/Dell firmware or RioPlay can't.
+- **Spotify Connect needs Spotify Premium.** The phone's Spotify app signs
+  the speaker in when you pick it, so the server stores no Spotify login and
+  anyone in the house can use it.
+- **AirPlay is classic AirPlay** (AirPlay 1). iPhones, iPads and Macs still
+  list and play to it. AirPlay 2 features (multi-room from the Home app,
+  Siri) aren't offered.
+- **A delay of a few seconds** between the phone and the sound: fine for
+  music, not for video.
+- **What happens on the receiver.** The music replaces what the receiver was
+  playing, and Now Playing shows "AirPlay · Anna's iPhone" with the song's
+  title and artist. Its own queue is kept: **Resume Up Next** on its card
+  plays it again from where it was. The newest phone wins if two pick the
+  same receiver. Stop (or Play/Pause) on the receiver, or music started from
+  its menus or the web interface, ends the session and disconnects the phone.
+  The receiver's volume follows the phone's, and its own volume keys work as
+  usual. Pause, next and previous on the receiver don't reach the phone.
+- AirPlay and Spotify plays don't count in Recently Played and Top 25.
+
+How it works: the server runs [shairport-sync](https://github.com/mikebrady/shairport-sync)
+(AirPlay) and [librespot](https://github.com/librespot-org/librespot)
+(Spotify Connect) for each receiver they're switched on for, encodes what
+they play as a 160 kbps MP3 stream (LAME), and the receiver plays that
+stream. The speakers are announced over mDNS under the host name
+`rioserver.local`, with only the address receivers use (`RIO_SERVER_IP` or
+the detected one), so they never answer for the host's own name.
 
 ## Firmware
 

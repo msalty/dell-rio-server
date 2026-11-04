@@ -108,6 +108,33 @@ doubled the CPU load. The display matters too: Now Playing scrolls a long
 title about 8 times a second, so a scroll step redraws only the title line,
 and text drawing avoids per-pixel division and clipping.
 
+## Live streams (1.8)
+
+`cmd live <path> <label>` plays an endless MP3 stream from the server, such
+as an AirPlay or Spotify Connect session the server receives for this
+receiver (see `docs/PROTOCOL.md`). It's the same decoding path as for files,
+with these differences in `src/player.c`:
+
+- No size or duration: seeking is off, and Now Playing shows the source
+  (`AirPlay · Anna's iPhone`) in the title bar and the elapsed time instead
+  of a progress bar. `cmd meta` updates the title, artist and album; a change
+  redraws the screen once, as a new track does.
+- A smaller start-up buffer (16 KB, 0.8 s at 160 kbps, against 48 KB for
+  files). The server sends the last ~0.75 s of the stream at once, so playback
+  starts almost straight away and the buffer then stays at that level.
+- When the connection drops, the firmware reconnects from scratch (there's no
+  `Range` to resume with) up to 3 times, 0.5, 1 and 2 s apart, then stops with
+  "Stream ended". The end of a stream is never "the next track".
+- Pause and Play/Pause end a live stream (it can't wait), and Next and
+  Previous do nothing.
+
+Live streams are 160 kbps constant bitrate (`RIO_LIVE_BITRATE`). Decoding
+costs about the same per second whatever the bitrate (`tools/cpubench.py 160`:
+13.2 M instructions per second of audio, against 14.7 M at 320 kbps), since
+the synthesis filterbank dominates; the saving is mostly in network reads.
+Whether 160 kbps plays cleanly on a real receiver, with the poll's `cpu`,
+`gaps` and `under` figures, still has to be checked on hardware.
+
 ## Licence
 
 GPL v2 or later (see `COPYING`), because the firmware links libmad (with

@@ -24,6 +24,10 @@ services:
       # RIO_PORTMAP_PORT: "11111"
       # Use polling instead of inotify for network shares (SMB/NFS mounts).
       # RIO_WATCH_POLLING: "1"
+      # AirPlay and Spotify Connect speakers are switched on per receiver in
+      # the web interface. These take the feature away altogether:
+      # RIO_AIRPLAY: "0"
+      # RIO_SPOTIFY: "0"
 
 volumes:
   rio-data:
