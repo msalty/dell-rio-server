@@ -114,3 +114,96 @@ files whose tags changed; show storage used.
   device.
 - An album is typically 50–150 MB, so dozens of albums fit, not a whole
   library.
+
+## Back up and restore the data volume
+
+Everything made in the app lives in the `/data` volume, apart from the
+music: playlists, play counts and history, podcast subscriptions and
+listening positions, receiver names, alarms and settings. Nothing backs it up,
+so losing the volume (reinstalling Docker or Umbrel, moving to a new host)
+loses all of it, even though the music is untouched.
+
+**The idea.** In Settings:
+
+- **Download backup:** a zip of the database and settings, made with
+  SQLite's online backup so it's consistent while the server runs.
+  Downloaded podcast episodes and firmware images are left out (they can be
+  fetched or copied again), which keeps the file small.
+- **Restore:** upload a backup, check that it's one of ours and of a schema
+  version we can read, swap it in and restart the affected services.
+- **Export as .m3u** on each playlist, so playlists can also live in the music
+  folder or go to another player.
+
+Small, mostly server-side. The cheapest protection for the things that took
+effort to build up.
+
+## Even out loudness between songs (ReplayGain)
+
+A 1980s CD rip and a 2010s release can differ a lot in loudness, which shows
+most in shuffle and Top 25. Nothing adjusts volume per track today.
+
+**The idea:**
+
+1. **Server:** read `REPLAYGAIN_TRACK_GAIN` / `REPLAYGAIN_ALBUM_GAIN` tags
+   (ID3v2 TXXX frames) during the scan. For files without them, optionally
+   measure loudness in the background (ffmpeg's `ebur128` filter) and store
+   the result in the database. Return the gain with each track. Album gain
+   when a whole album plays in order, track gain in shuffle.
+2. **Browser player:** apply it with a Web Audio gain node (`audio.volume`
+   can't go above 1, and iOS ignores it).
+3. **Chromecast:** scale the volume sent with each track, or leave it out.
+4. **Receiver firmware:** scale the decoder's output per track. Needs care
+   to avoid clipping when a gain is positive; test on a real receiver.
+
+Worth it for libraries that mix eras or sources. Steps 1–2 can ship without
+the firmware change.
+
+## Play FLAC, AAC and other formats
+
+Only `.mp3` files are indexed, because that's all the receiver hardware can
+decode, so FLAC, M4A, Ogg and other files in the music folder don't show up.
+
+**The idea.** Index them too (mutagen reads their tags), and convert each one
+to MP3 in the background with ffmpeg into a cache in `/data`. Every player
+then gets an ordinary MP3 with a known size, so seeking and the Rio
+protocol's byte ranges work unchanged. Browsers and Chromecasts could get
+the original file instead, as they can play it.
+
+Costs: ffmpeg in the Docker image, disk space for the cache (roughly 1 MB a
+minute at 128 kbit/s), and a first conversion that takes a while on a big
+library. A track can't play until its MP3 is ready, so convert newly added
+files first. Only worth it if the library isn't all MP3.
+
+## Shuffle Albums
+
+The classic iPod mode: whole albums, each played in track order, with the
+albums in random order. It fits a library that's browsed by album.
+
+The server builds the queue (shuffle the album list, then append each album's
+tracks); the receiver firmware gets a "Shuffle Albums" entry next to Shuffle
+Songs, and the web interface a button on the Albums page. Small.
+
+## An optional password for the web interface
+
+The web interface has no authentication, which is fine on a trusted home
+network. If it's ever reached through a reverse proxy or a port forward
+(rather than Tailscale, which already controls who can connect), it needs a
+password.
+
+**The idea.** An optional `RIO_WEB_PASSWORD`. When set, the web interface and
+its API ask for it once and keep a long-lived session cookie, and the stream
+and art URLs (which `<audio>` and `<img>` load without custom headers) are
+covered by the same cookie. Chromecasts fetch streams themselves, so they'd
+need signed, expiring stream URLs. The receivers' protocol stays open, as
+the hardware can't authenticate. Small to medium. Not needed while the
+server stays on the home network.
+
+## Considered and set aside
+
+- **Synchronised multi-room playback across Rio receivers.** The receivers
+  have no shared clock, so the same song started on several of them drifts
+  apart audibly within minutes. Google speaker groups already cover
+  in-sync playback.
+- **Scrobbling to Last.fm or ListenBrainz.** Easy, since plays are already
+  counted on every device, but only useful to someone who already uses one of
+  those services.
