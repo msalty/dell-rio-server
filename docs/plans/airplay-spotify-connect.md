@@ -147,15 +147,69 @@ Add a generic live mode to `player.c`, which internet radio will reuse:
 
 ### 7. Network and discovery
 
-The container uses host networking. AirPlay and Spotify Connect are found
-over mDNS, and the server already uses python-zeroconf for Chromecasts.
-Decide and document how shairport-sync and librespot advertise themselves
-without fighting over port 5353 with each other, the server's own zeroconf
-or the host's avahi-daemon (Umbrel runs one). Options include shairport-sync's
-mDNS backends, librespot's built-in mDNS or dns-sd backend, or advertising
-the services from the server with python-zeroconf. Test that the speakers
-appear on an iPhone and in the Spotify app while the server runs on a host
-that has avahi.
+The container uses host networking, so whatever it announces over mDNS
+speaks for the whole host. This was investigated before writing the plan
+(source of shairport-sync 5.6.2, librespot 0.8.0 and libmdns 0.10.1, plus
+a two-namespace test with avahi 0.8 acting as the host's mDNS service and a
+Docker-style bridge). Findings and what to do:
+
+- **Sharing UDP 5353 is fine.** avahi, python-zeroconf (SO_REUSEADDR and
+  SO_REUSEPORT) and libmdns (both) bind it together and all receive
+  multicast. The server already does this today: its Chromecast discovery
+  runs next to the host's mDNS on Umbrel.
+- **librespot's default responder leaks addresses under the host's name.**
+  libmdns answers for the system host name (`umbrel.local` on Umbrel) with
+  *every* non-loopback address, Docker bridges included. In the test, a
+  phone looking up `umbrel.local` got the bridge's 172.17.0.1 alongside the
+  real LAN address. That breaks more than Spotify: anything on the network
+  reaching the host by name can be handed an unreachable address, once per
+  running librespot. **Always pass `--zeroconf-interface <LAN IP>`** (the
+  address the receivers use, `RIO_SERVER_IP` or the detected one). Its
+  records then match the host's own and the test showed no side effects.
+  Also pass a fixed `--zeroconf-port` per instance. librespot has no
+  mode that skips mDNS while keeping the zeroconf login endpoint (its
+  `avahi` and `dns-sd` backends need a daemon over D-Bus).
+- **The distro shairport-sync only advertises through avahi-daemon over
+  D-Bus.** Ubuntu 24.04's package is 3.3.8 with the `avahi` mDNS backend
+  only; expect Debian's to be the same. Using it means mounting the host's
+  D-Bus socket (needs the host to run avahi, and Umbrel to allow the mount)
+  or running dbus and avahi inside the container. **Instead, build
+  shairport-sync from source** (a pinned 5.x release, in a Docker build
+  stage) with `--with-external-mdns --with-stdout --with-pipe
+  --with-metadata` and the AirPlay 1 defaults. Its external backend runs
+  `avahi-publish-service <name> <type> <port> <txt…>` from `PATH` and sends
+  it SIGTERM when it stops. Ship a tiny `avahi-publish-service` of our own
+  that hands those arguments to the server and withdraws them on SIGTERM.
+  The server then advertises `_raop._tcp` with exactly shairport-sync's TXT
+  records. This needs no daemons and no host mounts. A 5.x build also
+  leaves the door open to AirPlay 2: its sample configuration documents
+  running several AirPlay 2 instances on one host, each with its own
+  `nqptp_shared_memory_interface_name`.
+- **Advertise from the server with the python-zeroconf instance it already
+  has** (shared with Chromecast discovery, not a second one), under a host
+  name of its own, such as `rioserver.local` (or one per instance), with
+  only the LAN address. Never publish records for the system host name: in
+  the test, a responder that did so sent goodbye records for
+  `umbrel.local` when it stopped, briefly removing the host's real address
+  from caches until avahi re-announced. A name of our own avoided all of
+  this.
+- **Ports.** Under host networking every instance's ports are the host's.
+  shairport-sync (AirPlay 1) listens on TCP 5000 by default and allocates
+  UDP from 6001 (range 10). 5000 is a popular default for other software
+  (Synology's web interface, development servers). Give each instance its
+  own `port` and `udp_port_base`, from a configurable base
+  (`RIO_AIRPLAY_PORT_BASE`), and list them in the README's network
+  requirements. AirPlay 2 later needs `nqptp` on UDP 319 and 320, and only
+  one per host, which clashes with any other AirPlay 2 receiver on the
+  same machine.
+- **Optional, for Spotify:** librespot logged in with stored credentials
+  shows up for that Spotify account through Spotify's servers, with no mDNS
+  at all, but only for that account. Zeroconf stays the default so
+  everyone in the house can use it.
+
+Still to verify on a real network: the speakers appear on an iPhone and in
+the Spotify app, connect, and `umbrel.local` (or the host's name) still
+resolves only to its LAN address while they run.
 
 ## Out of scope for this change
 
