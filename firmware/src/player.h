@@ -30,6 +30,12 @@ struct player {
     int have_track;
     char status[48]; /* transient message for the UI, e.g. "Can't reach server" */
     uint32_t status_until;
+    /* Live mode (1.8): an endless stream such as an AirPlay or Spotify
+     * session. No queue, no size or duration, no seeking. */
+    int live;
+    char live_path[96];
+    char live_label[48]; /* "AirPlay · Anna's iPhone" */
+    uint32_t meta_changed; /* time_ms() of the last metadata change, for the UI */
 };
 
 extern struct player P;
@@ -42,6 +48,10 @@ int player_play_node(const char *node, int first, int shuffle);
  * track (the server has changed what follows it); position at `qi`, and
  * start playing that track if `start`. */
 int player_set_queue(const char *node, int qi, int start, int shuffle);
+/* Play the endless MP3 stream at `path` on the server (live mode). */
+int player_play_live(const char *path, const char *label);
+/* What a live stream is playing now (any argument may be 0 to keep it). */
+void player_set_meta(const char *label, const char *title, const char *artist, const char *album);
 void player_set_repeat(enum repeat_mode mode);
 void player_toggle(void);
 void player_pause(void);

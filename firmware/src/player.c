@@ -13,6 +13,13 @@
 #define PREBUFFER (48 * 1024)
 #define REBUFFER (16 * 1024)
 #define OUT_FRAMES 7200 /* 1152 frames upsampled from 8kHz to 44.1kHz */
+/* A live stream starts sooner: the server sends the last ~0.75 s of it at
+ * once and then keeps up in real time, so a smaller buffer keeps the delay
+ * down (16 KB is 0.8 s at 160 kbps). */
+#define LIVE_PREBUFFER (16 * 1024)
+#define LIVE_RETRIES 3      /* reconnects after a live stream drops, before giving up */
+#define LIVE_RETRY_MS 500   /* doubled on each attempt */
+#define LIVE_STEADY (64 * 1024) /* received since reconnecting: the connection is fine again */
 #define MAX_QUEUE 10000
 
 struct player P;
@@ -33,6 +40,8 @@ static uint32_t starved_at;
 static unsigned underruns;   /* since the last report to the server */
 static uint32_t underrun_ms;
 static uint32_t decode_us, net_us; /* CPU time, since the last report */
+static int live_retries;     /* reconnect attempts since the live stream last ran steadily */
+static uint32_t live_retry_at;
 
 static struct mad_stream mst;
 static struct mad_frame mfr;
@@ -181,6 +190,91 @@ static int open_stream(long from)
     return 0;
 }
 
+/* (Re)connect to the live stream from scratch: there is nothing to resume
+ * with a Range request. Elapsed time carries on across reconnects. */
+static int open_live(void)
+{
+    uint32_t elapsed = player_position_ms();
+    close_stream();
+    reset_decoder();
+    int s = http_request(P.live_path, 0, 5000);
+    if (s < 0)
+        return -1;
+    long clen;
+    int extra;
+    int status = http_read_headers(s, &clen, (char *)inbuf, INBUF_SIZE, &extra, 5000);
+    if (status != 200) {
+        dlog("player: %s -> HTTP %d\n", P.live_path, status);
+        net_close(s);
+        return -1;
+    }
+    in_end = extra;
+    received = extra;
+    stream_base = 0;
+    samples_out = 0;
+    base_ms = elapsed;
+    net_set_nonblocking(s, 1);
+    fd = s;
+    threshold = LIVE_PREBUFFER;
+    P.state = P_BUFFERING;
+    return 0;
+}
+
+/* The live stream dropped (or couldn't be reached): try again shortly, a
+ * few times, then stop with a message. */
+static void live_lost(void)
+{
+    close_stream();
+    end_starve();
+    audio_idle();
+    if (live_retries >= LIVE_RETRIES) {
+        dlog("player: live stream lost\n");
+        player_stop();
+        set_status("Stream ended");
+        return;
+    }
+    live_retry_at = time_ms() + ((uint32_t)LIVE_RETRY_MS << live_retries);
+    live_retries++;
+    dlog("player: live stream dropped; reconnecting (attempt %d)\n", live_retries);
+    P.state = P_BUFFERING;
+}
+
+int player_play_live(const char *path, const char *label)
+{
+    close_stream();
+    P.live = 1;
+    strlcpy(P.live_path, path, sizeof(P.live_path));
+    strlcpy(P.live_label, label, sizeof(P.live_label));
+    memset(&P.cur, 0, sizeof(P.cur));
+    P.have_track = 1;
+    P.qlen = P.qi = 0; /* the server saved the queue */
+    P.meta_changed = time_ms();
+    samples_out = 0;
+    base_ms = 0;
+    live_retries = 0;
+    fail_count = 0;
+    dlog("player: playing live %s \"%s\"\n", path, label);
+    if (open_live() < 0)
+        live_lost();
+    return 0;
+}
+
+void player_set_meta(const char *label, const char *title, const char *artist, const char *album)
+{
+    if (!P.live)
+        return;
+    if (label)
+        strlcpy(P.live_label, label, sizeof(P.live_label));
+    if (title)
+        strlcpy(P.cur.title, title, sizeof(P.cur.title));
+    if (artist)
+        strlcpy(P.cur.artist, artist, sizeof(P.cur.artist));
+    if (album)
+        strlcpy(P.cur.album, album, sizeof(P.cur.album));
+    P.meta_changed = time_ms();
+    dlog("player: live now \"%s\" by \"%s\"\n", P.cur.title, P.cur.artist);
+}
+
 static int start_current(void)
 {
     char buf[1024];
@@ -190,6 +284,7 @@ static int start_current(void)
         return -1;
     }
     memset(&P.cur, 0, sizeof(P.cur));
+    P.live = 0;
     P.cur.fid = P.queue[P.qi];
     P.have_track = 1;
     snprintf(path, sizeof(path), "/ng/track/%lx", (unsigned long)P.cur.fid);
@@ -279,6 +374,7 @@ int player_play_node(const char *node, int first, int shuffle)
     snprintf(path, sizeof(path), "/ng/queue/%s?first=%d&shuffle=%d", node, first, shuffle ? 1 : 0);
     if (load_queue(path) < 0)
         return -1;
+    P.live = 0;
     P.shuffle = shuffle;
     P.qi = 0;
     fail_count = 0;
@@ -321,10 +417,21 @@ void player_stop(void)
     audio_idle();
     close_stream();
     P.state = P_STOPPED;
+    if (P.live) {
+        /* the session is over: nothing to show or resume */
+        P.live = 0;
+        P.have_track = 0;
+        memset(&P.cur, 0, sizeof(P.cur));
+        P.live_label[0] = 0;
+    }
 }
 
 void player_pause(void)
 {
+    if (P.live) {
+        player_stop(); /* a live stream can't wait: pausing ends it */
+        return;
+    }
     end_starve(); /* a pause isn't waiting for data */
     audio_idle();
     if (P.state == P_PLAYING || P.state == P_BUFFERING)
@@ -350,13 +457,13 @@ void player_toggle(void)
 
 void player_next(void)
 {
-    if (P.qlen)
+    if (P.qlen && !P.live)
         advance(1);
 }
 
 void player_prev(void)
 {
-    if (!P.qlen)
+    if (!P.qlen || P.live)
         return;
     if (player_position_ms() > 3000 || P.qi == 0) {
         start_current();
@@ -368,7 +475,7 @@ void player_prev(void)
 
 void player_seek_ms(uint32_t ms)
 {
-    if (!P.have_track || !P.cur.dur_ms || !P.cur.size)
+    if (!P.have_track || P.live || !P.cur.dur_ms || !P.cur.size)
         return;
     if (ms >= P.cur.dur_ms)
         ms = P.cur.dur_ms - 1;
@@ -380,7 +487,7 @@ void player_seek_ms(uint32_t ms)
 
 void player_set_shuffle(int on)
 {
-    if (on == P.shuffle)
+    if (on == P.shuffle || P.live)
         return;
     P.shuffle = on;
     if (!P.qlen)
@@ -514,7 +621,15 @@ static void fill_from_network(int *busy)
         received += n;
         rebuffer = 1;
         *busy = 1;
+        if (P.live && live_retries && received >= LIVE_STEADY)
+            live_retries = 0;
     } else if (n == 0 || (n < 0 && n != -EAGAIN && n != -EINTR)) {
+        if (P.live) {
+            /* the end of a live stream isn't the next track: reconnect */
+            live_lost();
+            *busy = 1;
+            return;
+        }
         long expected = P.cur.size ? (long)P.cur.size - stream_base : 0;
         if (expected && received < expected && reconnects < 3) {
             /* connection dropped early (e.g. after a long pause): resume */
@@ -551,6 +666,13 @@ int player_service(int *busy)
     *busy = 0;
     if (P.state == P_STOPPED)
         return -1;
+    if (P.live && fd < 0) {
+        /* waiting to reconnect to a live stream */
+        if (P.state == P_BUFFERING && (int32_t)(time_ms() - live_retry_at) >= 0 && open_live() < 0)
+            live_lost();
+        if (fd < 0)
+            return -1;
+    }
     fill_from_network(busy);
     int avail = in_end - in_start;
     if (P.state == P_PAUSED)
@@ -612,6 +734,10 @@ int player_service(int *busy)
         }
         if (!MAD_RECOVERABLE(mst.error)) {
             dlog("player: decode error %d\n", mst.error);
+            if (P.live) {
+                live_lost(); /* start the stream afresh */
+                return fd;
+            }
             if (++fail_count > 3) {
                 set_status("Can't decode track");
                 player_stop();

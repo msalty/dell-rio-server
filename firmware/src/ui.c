@@ -17,7 +17,7 @@
 #include "player.h"
 #include "sys.h"
 
-#define VERSION "1.7"
+#define VERSION "1.8"
 #define WIN 24
 #define ROWS 4
 #define ROW_H 13
@@ -353,9 +353,49 @@ static void render_menu(void)
     }
 }
 
+/* Now Playing for a live stream (AirPlay, Spotify): where it comes from, the
+ * title, artist and album the server sends, and how long it has played. */
+static void render_live(void)
+{
+    char t1[16];
+    draw_title_bar(P.live_label[0] ? P.live_label : "Live");
+    const char *title = P.cur.title[0] ? P.cur.title : P.live_label[0] ? P.live_label : "Live";
+    int moving;
+    int off = marquee_scroll(&font_large, title, GFX_W - 4, NOW_MARQUEE_PASSES, &moving);
+    if (needs_marquee(&font_large, title, GFX_W - 4)) {
+        if (moving)
+            animating = title_scrolling = 1;
+        gfx_clip(2, 12, GFX_W - 2, 29);
+        gfx_text(&font_large, 2 - off, 12, title, 3, INK_NORMAL);
+        gfx_noclip();
+    } else {
+        gfx_text_center(&font_large, 12, title, 3);
+    }
+    gfx_text_center(&font_medium, 29, P.cur.artist, 3);
+    gfx_text_center(&font_medium, 41, P.cur.album, 2);
+    uint32_t now = time_ms();
+    if ((int32_t)(vol_until - now) > 0) {
+        gfx_icon(ICON_SPEAKER, 1, 56, 3);
+        gfx_rect(12, 57, 100, 5, 1);
+        gfx_fill(13, 58, 98 * P.volume / 100, 3, 3);
+        snprintf(t1, sizeof(t1), "%d", P.volume);
+        gfx_text_right(&font_small, GFX_W - 1, 54, t1, 3, INK_NORMAL);
+        return;
+    }
+    /* elapsed time only: a live stream has no length and can't be seeked */
+    fmt_time(t1, sizeof(t1), player_position_ms());
+    gfx_text(&font_small, 1, 54, t1, 3, INK_NORMAL);
+    if (P.state == P_BUFFERING && (now / 400) % 2)
+        gfx_text_right(&font_small, GFX_W - 1, 54, "...", 2, INK_NORMAL);
+}
+
 static void render_now(void)
 {
     char buf[48], t1[16], t2[16];
+    if (P.live) {
+        render_live();
+        return;
+    }
     if (P.qlen)
         snprintf(buf, sizeof(buf), "%d of %d", P.qi + 1, P.qlen);
     else
@@ -460,7 +500,7 @@ static void render(void)
 static void render_title_step(void)
 {
     uint32_t began = time_us();
-    const char *title = P.cur.title[0] ? P.cur.title : "Unknown";
+    const char *title = P.cur.title[0] ? P.cur.title : P.live ? (P.live_label[0] ? P.live_label : "Live") : "Unknown";
     int moving;
     int off = marquee_scroll(&font_large, title, GFX_W - 4, NOW_MARQUEE_PASSES, &moving);
     animating = title_scrolling = moving;
@@ -749,6 +789,11 @@ static void run_command(char **f, int nf)
         int shuffle = nf >= 6 ? atoi(f[5]) : P.shuffle;
         if (player_set_queue(f[2], atoi(f[3]), start, shuffle) == 0 && start && !standby)
             show_now_playing();
+    } else if (!strcmp(verb, "live") && nf >= 3) {
+        if (player_play_live(f[2], nf >= 4 ? f[3] : "Live") == 0 && !standby)
+            show_now_playing();
+    } else if (!strcmp(verb, "meta") && nf >= 3) {
+        player_set_meta(f[2], nf >= 4 ? f[3] : "", nf >= 5 ? f[4] : "", nf >= 6 ? f[5] : "");
     } else if (!strcmp(verb, "repeat") && nf >= 3) {
         if (!strcmp(f[2], "all"))
             player_set_repeat(REPEAT_ALL);
@@ -823,12 +868,12 @@ int ui_poll_start(int timeout_ms, unsigned stall_ms, uint32_t play_ms, uint32_t 
     }
     snprintf(path, sizeof(path),
              "/ng/poll?mac=%s&st=%s&id=%lx&pos=%lu&vol=%d&qi=%d&qn=%d&shuf=%d&rep=%s&wake=%d&stall=%u"
-             "&under=%u&underms=%lu&gaps=%u&gapms=%lu&abuf=%lu&cpu=%d&dec=%d&disp=%d&net=%d&ver=" VERSION,
+             "&under=%u&underms=%lu&gaps=%u&gapms=%lu&abuf=%lu&cpu=%d&dec=%d&disp=%d&net=%d&live=%d&ver=" VERSION,
              net_mac(), standby ? "standby" : states[P.state],
              (unsigned long)(P.have_track ? P.cur.fid : 0), (unsigned long)player_position_ms(),
              P.volume, P.qi, P.qlen, P.shuffle, repeats[P.repeat], wake_port, stall_ms,
              under, (unsigned long)under_ms, au.gaps, (unsigned long)au.gap_ms, (unsigned long)au.buffer_ms, cpu,
-             dec, disp, net);
+             dec, disp, net, P.live);
     int r = http_async_start(&poll_req, path, poll_buf, sizeof(poll_buf), timeout_ms);
     if (r == 0) {
         player_underruns_reported();
@@ -851,9 +896,9 @@ int ui_poll_step(void)
         char *next = strchr(line, '\n');
         if (next)
             *next++ = 0;
-        char *f[6] = {0};
+        char *f[8] = {0};
         int nf = 0;
-        for (char *p = line; p && nf < 6;) {
+        for (char *p = line; p && nf < 8;) {
             f[nf++] = p;
             p = strchr(p, '\t');
             if (p)
@@ -894,9 +939,15 @@ void ui_tick(uint32_t now)
         display_backlight(0);
         backlight_on = 0;
     }
-    static uint32_t last_second;
+    static uint32_t last_second, last_meta;
     static enum pstate last_state;
     static int last_qi;
+    if (P.meta_changed != last_meta) {
+        /* a live stream's track changed: show its title from the start */
+        last_meta = P.meta_changed;
+        marquee_start = now;
+        dirty = 1;
+    }
     if (screen == SCR_NOW && player_position_ms() / 1000 != last_second) {
         last_second = player_position_ms() / 1000;
         dirty = 1;
