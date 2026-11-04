@@ -146,6 +146,13 @@ From the plan, plus what I couldn't check here:
 - [ ] **Another AirPlay receiver on the same host** (if you have one, say
       shairport-sync installed on Umbrel) still works; ours use 5100+ and
       5300+, not 5000/7000.
+- [ ] **A browser receiver as a speaker.** On a tablet or old phone, start
+      "Use this device as a receiver", switch AirPlay (or Spotify) on on its
+      card, and play to it from another phone. Its display shows the song and
+      cover, and its lock-screen / media controls show them too. Close the
+      page: within about a minute the speaker disappears from the phone's
+      list. On an iPhone or iPad used as the receiver, the sending phone's
+      volume can't change the page's volume (a Safari restriction).
 - [ ] Turning both switches off stops the processes (`docker top <container>`
       no longer lists shairport-sync or librespot).
 
@@ -182,8 +189,17 @@ Verified in this environment:
   server's arguments and answers Spotify's zeroconf `getInfo` on its port
   (`accountReq: PREMIUM`, `deviceType: Speaker`). No Spotify account here,
   so no real Spotify session.
-- The web interface's receiver card during a session, and at phone width
-  (Playwright screenshot).
+- The web interface's receiver card, player bar and full-screen Now Playing
+  during a session, at phone width (Playwright screenshots).
+- **Browser receivers as speakers:** server tests drive a page over its
+  WebSocket (the `live` and `meta` messages, confirming, pause ending it,
+  Resume Up Next, a page that gives up), and a headless Chromium in receiver
+  mode played an AirPlay session from the fake shairport-sync in real time
+  through its `<audio>` element and showed it on its display.
+- **Source stalls:** a test stalls the source for 0.8 s and checks listeners
+  still get exactly real time (the previous pacer came up 0.4 s short), and
+  the qemu test stalls the fake AirPlay source for 1 s without the receiver
+  running out of data.
 - The Dockerfile's cross-compile commands for **arm64**, run on this
   (Ubuntu) machine with the same pinned commits and flags: both binaries
   build, and run under `qemu-aarch64`.

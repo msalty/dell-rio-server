@@ -349,3 +349,84 @@ async def test_stop_in_the_web_interface_ends_the_session(client):
     resp = await client.get(f"/live/{SID}")
     assert resp.status == 404
     await wait_for(lambda: len(starts(client, "airplay-0")) == 2)
+
+
+# ---- browsers used as receivers ---------------------------------------------
+
+async def test_a_browser_receiver_is_an_airplay_speaker_too(client, library):
+    """A phone or tablet in receiver mode gets its own AirPlay speaker; the
+    session reaches the page as a 'live' message over its WebSocket."""
+    from tests.test_browser_receiver import connect
+
+    page = await connect(client, cid="tablet1", name="Living Room")
+    pid = "web-tablet1"
+    await api(client, f"/api/receivers/{pid}/name", {"name": "Living Room"})
+    async def offered():
+        r = next(x for x in await api(client, "/api/receivers") if x["id"] == pid)
+        return r["speakers"]
+    assert (await wait_for(offered))["airplay"] is False  # offered, and off to begin with
+    await api(client, f"/api/receivers/{pid}/speakers", {"airplay": True})
+    await wait_for(lambda: (client.fakes / "airplay-0.ctl").exists())
+    await wait_for(lambda: "ABCDEF012345@Living Room._raop._tcp.local." in client.zc.registered)
+
+    # something from the library plays first, so there's a queue to come back to
+    album = library.albums()[0]["id"]
+    await api(client, f"/api/receivers/{pid}/play", {"album_id": album})
+    load = await page.expect("load")
+    await page.send(type="status", st="play", pos=500, track_id=load["track"]["id"])
+
+    await control(client, "airplay-0", play=60, title="Song", artist="Artist", album="Album", sender="Anna's iPhone")
+    live = await page.expect("live")
+    assert live["url"] == f"/live/{pid}"
+    meta = await page.expect("meta")
+    while meta["info"]["title"] != "Song":
+        meta = await page.expect("meta")
+    assert meta["info"]["label"] == "AirPlay · Anna's iPhone" and meta["info"]["art"].startswith("/api/receivers/")
+    await page.send(type="status", st="play", pos=0, track_id=None, live=1)
+
+    # the stream is a higher bitrate than a Rio's
+    resp = await client.get(live["url"])
+    assert resp.status == 200
+    await asyncio.wait_for(resp.content.readexactly(4096), 5)
+    resp.close()
+    assert client.ctx.speakers.streams[pid].bitrate == 320
+    r = next(x for x in await api(client, "/api/receivers") if x["id"] == pid)
+    assert r["state"]["app"] == "AirPlay" and r["state"]["live"]["title"] == "Song"
+    assert r["queue_saved"] and "track" not in r["state"]
+
+    # pause from the web interface (or the page's own display) ends it
+    await api(client, f"/api/receivers/{pid}/command", {"cmd": "toggle"})
+    await page.expect("stop")
+    assert pid not in client.ctx.speakers.sessions
+    await wait_for(lambda: len(starts(client, "airplay-0")) == 2)  # the phone was disconnected
+    await page.send(type="status", st="stop", pos=0, track_id=None, live=0)
+    r = next(x for x in await api(client, "/api/receivers") if x["id"] == pid)
+    assert r["resumable"] and "live" not in r["state"]
+    await api(client, f"/api/receivers/{pid}/resume", {})
+    assert (await page.expect("load"))["track"]["id"] == load["track"]["id"]
+
+
+async def test_a_browser_that_gives_up_on_the_stream_ends_the_session(client):
+    from tests.test_browser_receiver import connect
+
+    page = await connect(client, cid="tablet2")
+    pid = "web-tablet2"
+    await api(client, f"/api/receivers/{pid}/speakers", {"spotify": True})
+    await control(client, "spotify-0", play=60, title="Track", artist="Band", sender="Pixel")
+    await page.expect("live")
+    await page.send(type="status", st="play", pos=0, track_id=None, live=1)
+    await wait_for(lambda: client.ctx.speakers.sessions[pid].confirmed)
+    # the page was reloaded (or couldn't reconnect): it reports nothing live
+    await page.send(type="status", st="stop", pos=0, track_id=None, live=0)
+    await wait_for(lambda: pid not in client.ctx.speakers.sessions)
+    await wait_for(lambda: len(starts(client, "spotify-0")) == 2)
+
+
+async def test_chromecasts_are_not_offered_as_speakers(client):
+    from rioserver.players import QueuePlayer
+
+    class Speaker(QueuePlayer):
+        kind = "cast"
+    client.ctx.receivers.add(Speaker("cast-1", "Kitchen speaker", "10.0.0.9"))
+    resp = await client.post("/api/receivers/cast-1/speakers", json={"airplay": True})
+    assert resp.status == 400

@@ -1,10 +1,12 @@
 """Receivers as AirPlay and Spotify Connect speakers.
 
-For each NG receiver (firmware 1.8 or later) with the switches on in the web
-interface, the server runs a shairport-sync (classic AirPlay) and/or a
-librespot (Spotify Connect) named after the receiver. Their PCM output goes
-into the receiver's LiveStream (live.py), and the receiver plays the MP3
-stream from /live/<id> (the firmware's live mode, "cmd live").
+For each NG receiver (firmware 1.8 or later), and each browser used as a
+receiver, with the switches on in the web interface, the server runs a
+shairport-sync (classic AirPlay) and/or a librespot (Spotify Connect) named
+after it. Their PCM output goes into the receiver's LiveStream (live.py), and
+the receiver plays the MP3 stream from /live/<id>: a Rio through the
+firmware's live mode ("cmd live" in its poll), a browser through a "live"
+message on its WebSocket (webplayer.py).
 
 Sessions: when a phone starts playing to a receiver's speaker, the server
 saves the receiver's queue (for "Resume Up Next" in the web interface),
@@ -50,6 +52,7 @@ from aiohttp import web
 
 from .live import LiveStream
 from .receivers import Receiver, firmware_version
+from .webplayer import BrowserPlayer
 
 log = logging.getLogger(__name__)
 
@@ -64,10 +67,19 @@ RESTART_DELAYS = (2, 5, 15, 30, 60)  # after a process exits unexpectedly
 META_SETTLE = 0.25  # seconds to gather metadata changes into one "meta" command
 AIRPLAY_PORT_STRIDE = 16
 NAME_LIMIT = 40
+BROWSER_BITRATE = 320  # kbps: browsers have CPU to spare, unlike the Rio
+BROWSER_GRACE = 60  # seconds a browser may be gone (a reload) before its speakers are withdrawn
 
 
-def stream_id(r: Receiver) -> str:
-    return re.sub(r"[^0-9a-f]", "", (r.mac or r.ip).lower()) or "0"
+def stream_id(r) -> str:
+    if isinstance(r, Receiver):
+        return re.sub(r"[^0-9a-f]", "", (r.mac or r.ip).lower()) or "0"
+    return re.sub(r"[^a-z0-9-]", "", r.id.lower()) or "0"
+
+
+def can_be_speaker(r) -> bool:
+    """Rio receivers on NG firmware, and browsers used as receivers."""
+    return (isinstance(r, Receiver) and r.firmware == "ng") or isinstance(r, BrowserPlayer)
 
 
 def _conf_string(s: str) -> str:
@@ -402,20 +414,22 @@ class Speakers:
     def available(self) -> dict:
         return {"airplay": bool(self.shairport_bin), "spotify": bool(self.librespot_bin)}
 
-    def view(self, r: Receiver) -> dict:
+    def view(self, r) -> dict:
         s = self.settings.get(r.key, {})
-        ver = firmware_version(r.state.get("ver"))
+        ver = firmware_version(r.state.get("ver")) if isinstance(r, Receiver) else ()
         return {"airplay": bool(s.get("airplay")), "spotify": bool(s.get("spotify")),
                 "available": self.available(),
-                "needs_update": r.firmware == "ng" and bool(ver) and ver < LIVE_FIRMWARE}
+                "needs_update": bool(ver) and ver < LIVE_FIRMWARE}
 
-    def refresh(self, r: Receiver) -> None:
+    def refresh(self, r) -> None:
         """Update what the web interface shows of r's speakers."""
-        if r.firmware == "ng":
+        if can_be_speaker(r):
             r.speakers = self.view(r)
-        r.resumable = r.key in self.saved
+            r.resumable = r.key in self.saved
+        if isinstance(r, BrowserPlayer) and r.live_report is None:
+            r.live_report = lambda live, r=r: self.polled(r, "1" if live else "0")
 
-    def configure(self, r: Receiver, **switches) -> None:
+    def configure(self, r, **switches) -> None:
         s = self.settings.setdefault(r.key, {})
         for kind in KINDS:
             if kind in switches:
@@ -493,14 +507,18 @@ class Speakers:
         want = {}
         now = time.time()
         for r in self.registry.all():
-            if not isinstance(r, Receiver) or r.firmware != "ng":
+            if not can_be_speaker(r):
                 continue
             s = self.settings.get(r.key)
-            if not s or firmware_version(r.state.get("ver")) < LIVE_FIRMWARE:
+            if not s:
                 continue
-            if now - r.last_seen > OFFLINE_GRACE:
-                continue
-            ip = self.cfg.server_ip or local_ip_for(r.ip)
+            if isinstance(r, Receiver):
+                if firmware_version(r.state.get("ver")) < LIVE_FIRMWARE or now - r.last_seen > OFFLINE_GRACE:
+                    continue
+            elif not r.online and now - r.last_seen > BROWSER_GRACE:
+                continue  # a page that has closed can't play
+            near = r.ip if r.ip and not r.ip.startswith("127.") else ""
+            ip = self.cfg.server_ip or local_ip_for(near)
             for kind in KINDS:
                 if s.get(kind) and avail[kind]:
                     want[(r.key, kind)] = (r.name[:NAME_LIMIT], int(s.get("slot", 0)), ip)
@@ -508,8 +526,7 @@ class Speakers:
 
     async def reconcile(self) -> None:
         for r in self.registry.all():
-            if isinstance(r, Receiver):
-                self.refresh(r)
+            self.refresh(r)
         want = self._wanted()
         for key, inst in list(self.instances.items()):
             spec = want.get(key)
@@ -541,9 +558,10 @@ class Speakers:
             self.end(inst.key, kick=False)
 
     # -- helpers --------------------------------------------------------------
-    def _receiver(self, key: str) -> Receiver | None:
+    def _receiver(self, key: str):
+        """The receiver (Rio or browser) with that key, if it can be a speaker."""
         r = self.registry.get(key)
-        return r if isinstance(r, Receiver) else None
+        return r if r is not None and can_be_speaker(r) else None
 
     def _instance(self, instance_id: str) -> Instance | None:
         return next((i for i in self.instances.values() if i.id == instance_id), None)
@@ -555,7 +573,8 @@ class Speakers:
     def stream(self, key: str) -> LiveStream:
         st = self.streams.get(key)
         if st is None:
-            st = self.streams[key] = LiveStream(key, self.cfg.live_bitrate)
+            browser = isinstance(self.registry.get(key), BrowserPlayer)
+            st = self.streams[key] = LiveStream(key, BROWSER_BITRATE if browser else self.cfg.live_bitrate)
             st.on_change.append(lambda changed, key=key: self._meta_changed(key, changed))
         return st
 
@@ -595,8 +614,12 @@ class Speakers:
         if ids:
             self.saved[key] = {"track_ids": ids, "index": index, "pos_ms": pos}
             r.resumable = True
-        r.pq.load([])
-        r.queue_known = False
+        if isinstance(r, Receiver):
+            r.pq.load([])
+            r.queue_known = False
+        else:
+            with r._lock:
+                r.pq.load([])  # the queue is saved above
         self.sessions[key] = Session(kind)
         sid = stream_id(r)
         self._ids[sid] = key
@@ -613,7 +636,10 @@ class Speakers:
             if self._session_kind(key) is None:
                 await st.stop()
                 return
-            self.registry.command(r, "live", f"/live/{sid}", self._label(key))
+            if isinstance(r, Receiver):
+                self.registry.command(r, "live", f"/live/{sid}", self._label(key))
+            else:
+                r.play_live(f"/live/{sid}", self._info(key))
             self._send_meta(key)
         asyncio.ensure_future(go())
 
@@ -642,7 +668,7 @@ class Speakers:
             if stop_receiver:
                 self.registry.command(r, "stop")
 
-    def local_command(self, r: Receiver, verb: str) -> bool:
+    def local_command(self, r, verb: str) -> bool:
         """A command for receiver r from the web interface (registry.command).
         Returns True if it was dealt with here and must not be sent."""
         if verb in ("play", "queue") and self.saved.pop(r.key, None) is not None:
@@ -657,7 +683,7 @@ class Speakers:
             return True
         return verb in ("next", "prev", "resume", "seek", "repeat")  # nothing to do while live
 
-    def polled(self, r: Receiver, live: str) -> None:
+    def polled(self, r, live: str) -> None:
         """A status poll: is the receiver playing the live stream?"""
         self.refresh(r)
         sess = self.sessions.get(r.key)
@@ -674,11 +700,12 @@ class Speakers:
             self._report_stream(r, sess)
             return
         if sess.confirmed or time.monotonic() - sess.started > CONFIRM_SECONDS:
-            # Stopped, or playing something else, on the receiver itself.
+            # Stopped, or playing something else, on the receiver itself (or a
+            # browser that was reloaded or gave up on the stream).
             log.info("%s: playback changed on the receiver; ending the %s session", r.name, APP_NAMES[sess.kind])
             self.end(r.key, kick=True, stop_receiver=False)
 
-    def _report_stream(self, r: Receiver, sess: Session) -> None:
+    def _report_stream(self, r, sess: Session) -> None:
         """Log what went wrong upstream of the receiver since its last poll, so
         a receiver running out of music can be traced to its cause."""
         st = self.streams.get(r.key)
@@ -704,7 +731,7 @@ class Speakers:
         held = f" (the receiver held {lbuf / 1000:.1f} s of it)" if lbuf is not None and lbuf >= 0 else ""
         return f" during the {APP_NAMES[sess.kind]} stream{held}"
 
-    def resume(self, r: Receiver) -> dict | None:
+    def resume(self, r) -> dict | None:
         saved = self.saved.pop(r.key, None)
         r.resumable = False
         return saved
@@ -731,7 +758,7 @@ class Speakers:
                   "sender": m.get("sender", ""), "title": m.get("title", ""), "artist": m.get("artist", ""),
                   "album": m.get("album", ""), "art": art, "paused": bool(m.get("paused")),
                   "volume": m.get("volume")}
-        if {"title", "artist", "album", "sender", "source"} & set(changed):
+        if {"title", "artist", "album", "sender", "source", "art", "art_url"} & set(changed):
             self._send_meta(key, settle=True)
 
     def _send_meta(self, key: str, settle: bool = False) -> None:
@@ -747,12 +774,25 @@ class Speakers:
             if r is None or st is None or key not in self.sessions or not st.running:
                 return
             m = st.meta
-            self.registry.command(r, "meta", self._label(key), _clean(m.get("title", "")),
-                                  _clean(m.get("artist", "")), _clean(m.get("album", "")))
+            if isinstance(r, Receiver):
+                self.registry.command(r, "meta", self._label(key), _clean(m.get("title", "")),
+                                      _clean(m.get("artist", "")), _clean(m.get("album", "")))
+            else:
+                r.live_meta(self._info(key))
         if settle:
             self._meta_due[key] = loop.call_later(META_SETTLE, send)
         else:
             send()
+
+    def _info(self, key: str) -> dict:
+        """What a browser receiver shows of a live session (its display and
+        the phone's lock screen)."""
+        r = self._receiver(key)
+        live = (r.live if r is not None else None) or {}
+        st = self.streams.get(key)
+        m = st.meta if st else {}
+        return {"label": self._label(key), "title": m.get("title", ""), "artist": m.get("artist", ""),
+                "album": m.get("album", ""), "art": live.get("art")}
 
     def _meta(self, key: str, kind: str, **meta) -> None:
         self._known.setdefault((key, kind), {}).update(meta)
@@ -884,7 +924,7 @@ class Speakers:
             raise web.HTTPNotFound(text="nothing is streaming")
         return await st.serve(req)
 
-    def art(self, r: Receiver) -> tuple[bytes, str] | None:
+    def art(self, r) -> tuple[bytes, str] | None:
         st = self.streams.get(r.key)
         if st is None or not st.meta.get("art"):
             return None

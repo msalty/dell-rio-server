@@ -40,9 +40,9 @@ RioServer NG runs in Docker. It provides:
   Home and Nest speakers, speaker groups, and speakers and TVs with
   Chromecast built-in show up next to your receivers, and you can send music
   to them the same way. See [Chromecast and Google speakers](#chromecast-and-google-speakers).
-- **AirPlay and Spotify Connect.** Each receiver can show up as a speaker in
-  an iPhone's AirPlay menu and in Spotify's device picker, so a phone can
-  play to "Kitchen" directly. Off until you switch it on per receiver. See
+- **AirPlay and Spotify Connect.** Each receiver (and each phone or tablet
+  used as a receiver) can show up as a speaker in an iPhone's AirPlay menu
+  and in Spotify's device picker, so a phone can play to "Kitchen" directly. Off until you switch it on per receiver. See
   [AirPlay and Spotify Connect](#airplay-and-spotify-connect).
 - **Automatic library updates.** Music added to, changed in or removed from
   the mounted folder shows up within seconds. A periodic rescan catches
@@ -312,10 +312,16 @@ Spotify Connect switches. Both are off to begin with, and nothing extra runs
 until one is switched on. Renaming the receiver renames its speakers.
 `RIO_AIRPLAY=0` and `RIO_SPOTIFY=0` take the feature away altogether.
 
-- **Only receivers running the RioServer NG firmware 1.8 or later** take
-  part. Power-cycle a receiver once after updating the server so it loads the
-  new firmware; its card says so if it hasn't yet. Receivers on the original
+- **Receivers running the RioServer NG firmware 1.8 or later** take part.
+  Power-cycle a receiver once after updating the server so it loads the new
+  firmware; its card says so if it hasn't yet. Receivers on the original
   SonicBlue/Dell firmware or RioPlay can't.
+- **Phones and tablets used as receivers** (see
+  [Phones and tablets as receivers](#phones-and-tablets-as-receivers)) can be
+  AirPlay and Spotify speakers too, with the same switches on their card.
+  They get a 320 kbps stream. The speaker is there only while the receiver
+  page is open on that device; it is withdrawn a minute after the page
+  closes. Chromecasts can't be AirPlay or Spotify speakers this way.
 - **Spotify Connect needs Spotify Premium.** The phone's Spotify app signs
   the speaker in when you pick it, so the server stores no Spotify login and
   anyone in the house can use it.

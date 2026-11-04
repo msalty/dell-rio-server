@@ -82,6 +82,15 @@ class QueuePlayer:
         self._pending: dict[str, float] = {}  # latest volume/seek not yet sent
         self._lock = threading.RLock()
         self._worker = ThreadPoolExecutor(1, thread_name_prefix=f"player-{player_id}")
+        # AirPlay / Spotify Connect (speakers.py), for players that can play a
+        # live stream (browsers): the session playing, the switches, and
+        # whether a queue it replaced can be resumed.
+        self.live: dict | None = None
+        self.speakers: dict | None = None
+        self.resumable = False
+        # Set by the registry: sees commands first, so they can end a live
+        # session; returns True if the command is dealt with.
+        self.command_hook: Callable[[str], bool] | None = None
 
     @property
     def key(self) -> str:
@@ -119,12 +128,17 @@ class QueuePlayer:
     def state(self) -> dict:
         """Playback state in the shape the NG firmware reports it."""
         with self._lock:
-            t = self.current if not self._other_app else None
+            t = self.current if not self._other_app and not self.live else None
             st = {"st": self._st, "pos": str(self.position_ms()), "vol": "" if self._vol is None else str(self._vol),
                   "qi": str(self.index), "qn": str(len(self.pq)), "shuf": "1" if self.shuffle else "0",
                   "rep": self.repeat}
             if self._other_app:
                 st["app"] = self._other_app
+            if self.live:
+                st["app"] = self.live["app"]
+                st["live"] = self.live
+                if self.live.get("paused") and st["st"] == "play":
+                    st["st"] = "pause"
             if t:
                 st["id"] = f"{ids.track_fid(t['id']):x}"
                 st["track"] = track_state(t)
@@ -148,11 +162,17 @@ class QueuePlayer:
             "last_seen": self.last_seen,
             "state": self.state,
             "sleep_at": self.sleep_at,
+            "speakers": self.speakers,
+            "resumable": self.resumable and not self.live,
+            "queue_saved": self.resumable,
         }
 
     # -- commands from the web interface ---------------------------------
+    def _hooked(self, verb: str) -> bool:
+        return self.command_hook is not None and self.command_hook(verb)
+
     def play(self, tracks: list[dict], index: int = 0, shuffle: bool = False, start_ms: int | None = None) -> None:
-        if not tracks:
+        if not tracks or self._hooked("play"):
             return
         with self._lock:
             start = self.pq.load(tracks, index, shuffle)
@@ -161,6 +181,8 @@ class QueuePlayer:
         self._submit(self._start, start, start_ms)
 
     def command(self, verb: str, value=None) -> None:
+        if self._hooked(verb):
+            return
         if verb in ("vol", "seek"):
             try:
                 number = max(0, int(float(value)))
@@ -193,6 +215,8 @@ class QueuePlayer:
         """Change the queue: "next" and "add" tracks, "move" pos to `to`,
         "remove" pos, "clear" what's still to come, "jump" to pos (play it),
         "shuffle" on or off."""
+        if self._hooked("queue"):
+            return
         with self._lock:
             was_empty = not self.pq.items
             if op == "next":

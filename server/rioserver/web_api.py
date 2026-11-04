@@ -18,6 +18,7 @@ from .podcasts import PodcastError, make_opml, parse_opml
 from .receivers import QueueError, Receiver
 from .rio_classic import send_audio
 from .rio_ng import NGProtocol, NodeError
+from .speakers import can_be_speaker
 from .webplayer import BrowserPlayer, device_model
 
 log = logging.getLogger(__name__)
@@ -535,8 +536,9 @@ class WebAPI:
     async def receiver_speakers(self, req: web.Request) -> web.Response:
         """Switch a receiver's AirPlay / Spotify Connect speakers on or off."""
         r = self._receiver(req)
-        if not isinstance(r, Receiver):
-            raise web.HTTPBadRequest(text="only Rio receivers can be AirPlay or Spotify speakers")
+        if not can_be_speaker(r):
+            raise web.HTTPBadRequest(text="only Rio receivers and browsers used as receivers can be "
+                                          "AirPlay or Spotify speakers")
         body = await _body(req)
         self._speakers().configure(r, **{k: bool(body[k]) for k in ("airplay", "spotify") if k in body})
         return web.json_response(r.to_json())
@@ -544,7 +546,7 @@ class WebAPI:
     async def receiver_resume(self, req: web.Request) -> web.Response:
         """Play the queue an AirPlay or Spotify session replaced, from where it was."""
         r = self._receiver(req)
-        saved = self._speakers().resume(r) if isinstance(r, Receiver) else None
+        saved = self._speakers().resume(r) if can_be_speaker(r) else None
         if not saved:
             raise web.HTTPConflict(text="There is nothing to resume")
         tracks = await self._run(self.lib.tracks_by_ids, saved["track_ids"])
@@ -558,7 +560,7 @@ class WebAPI:
 
     async def receiver_live_art(self, req: web.Request) -> web.Response:
         r = self.ctx.receivers.get(req.match_info["id"])
-        art = self.ctx.speakers.art(r) if self.ctx.speakers is not None and isinstance(r, Receiver) else None
+        art = self.ctx.speakers.art(r) if self.ctx.speakers is not None and r is not None and can_be_speaker(r) else None
         if art is None:
             raise web.HTTPNotFound()
         return web.Response(body=art[0], content_type=art[1], headers={"Cache-Control": "max-age=3600"})

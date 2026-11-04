@@ -1298,6 +1298,7 @@ const RX = {
   cur: 0,
   track: null,     // what the active element plays
   pre: null,       // {track} loaded in the other element, to go on to
+  live: null,      // {url, info, tries}: an AirPlay or Spotify session's endless stream
   retry: 0,
   timer: null,
   wake: null,
@@ -1353,7 +1354,7 @@ const RX = {
     if (this.ws) { this.ws.onclose = null; this.ws.close(); }
     this.ws = null;
     for (const el of this.els) { el.pause(); el.removeAttribute("src"); el.load(); }
-    this.track = this.pre = null;
+    this.track = this.pre = this.live = null;
     if (this.wake) { this.wake.release().catch(() => {}); this.wake = null; }
     if (Player.target === this.id) setTarget("");
     this.id = "";
@@ -1384,13 +1385,15 @@ const RX = {
   },
   state() {
     const el = this.el;
+    if (this.live) return el.paused ? "pause" : el.readyState < 3 ? "buffer" : "play";
     if (!this.track || el.ended) return "stop";
     if (el.paused) return "pause";
     return el.readyState < 3 ? "buffer" : "play";
   },
   report() {
     this.send({ type: "status", st: this.state(), pos: Math.round((this.el.currentTime || 0) * 1000),
-      track_id: this.track ? this.track.id : null, vol: Math.round(this.el.volume * 100) });
+      track_id: this.track ? this.track.id : null, vol: Math.round(this.el.volume * 100),
+      live: this.live ? 1 : 0 });
   },
   play(el) {
     const p = el.play();
@@ -1409,7 +1412,18 @@ const RX = {
       setTarget(m.id);
       renderPill();
       pollReceivers();
+    } else if (m.type === "live") {
+      // An endless MP3 stream from the server: no length, no seeking.
+      this.pre = null;
+      this.other.pause();
+      this.track = null;
+      this.live = { url: m.url, info: m.info || {}, tries: 0 };
+      this.playLive();
+      this.setMeta();
+    } else if (m.type === "meta") {
+      if (this.live) { this.live.info = m.info || {}; this.setMeta(); }
     } else if (m.type === "load") {
+      this.live = null;
       this.pre = null;
       this.other.pause();
       this.track = m.track;
@@ -1429,8 +1443,10 @@ const RX = {
       this.play(el);
     } else if (m.type === "stop") {
       el.pause();
+      if (this.live) { el.removeAttribute("src"); el.load(); } // stop fetching the stream
       this.track = null;
       this.pre = null;
+      this.live = null;
     } else if (m.type === "seek") {
       el.currentTime = m.to;
     } else if (m.type === "volume") {
@@ -1438,8 +1454,27 @@ const RX = {
     }
     this.report();
   },
+  playLive() {
+    const el = this.el;
+    el.src = `${this.live.url}?t=${Date.now()}`; // a fresh connection, never a cached one
+    this.play(el);
+  },
+  // The live stream dropped: connect again a few times, then give up (the
+  // server then ends the session).
+  liveLost() {
+    const lv = this.live;
+    if (!lv) return;
+    if (lv.tries >= 3) {
+      this.live = null;
+      this.report();
+      return;
+    }
+    lv.tries++;
+    setTimeout(() => { if (this.live === lv) this.playLive(); }, 500 * 2 ** (lv.tries - 1));
+  },
   ended(el) {
     if (el !== this.el) return;
+    if (this.live) { this.liveLost(); return; }
     if (this.pre) {
       // Straight on to the track that's ready in the other element.
       this.cur = 1 - this.cur;
@@ -1454,6 +1489,7 @@ const RX = {
     }
   },
   failed(el) {
+    if (el === this.el && this.live) { if (el.getAttribute("src")) this.liveLost(); return; }
     if (el === this.el && this.track && el.getAttribute("src") && !el.src.startsWith("blob:")) {
       this.send({ type: "ended", track_id: this.track.id, failed: true });
     } else if (el === this.other) {
@@ -1461,7 +1497,16 @@ const RX = {
     }
   },
   setMeta() {
-    if (!("mediaSession" in navigator) || !this.track) return;
+    if (!("mediaSession" in navigator)) return;
+    if (this.live) {
+      const i = this.live.info;
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: i.title || i.label || "Live", artist: i.artist || "", album: i.album || "",
+        artwork: i.art ? [{ src: i.art, sizes: "512x512" }] : [],
+      });
+      return;
+    }
+    if (!this.track) return;
     const t = this.track;
     navigator.mediaSession.metadata = new MediaMetadata({
       title: t.title, artist: t.artist, album: t.album, artwork: [{ src: albumArtUrl(t.album_id), sizes: "512x512" }],
@@ -1481,7 +1526,7 @@ for (const el of RX.els) {
   el.addEventListener("error", () => RX.failed(el));
   for (const ev of ["play", "pause", "playing", "waiting", "seeked"]) el.addEventListener(ev, () => { if (el === RX.el) RX.report(); });
 }
-setInterval(() => { if (RX.on && RX.track && !RX.el.paused) RX.report(); }, 2000);
+setInterval(() => { if (RX.on && (RX.track || RX.live) && !RX.el.paused) RX.report(); }, 2000);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden || !RX.on) return;
   RX.keepAwake();
@@ -2333,7 +2378,8 @@ function receiverCard(id) {
       if (document.activeElement !== spotifySw.input) spotifySw.input.checked = sp.spotify;
       speakerNote.textContent = sp.needs_update && (sp.airplay || sp.spotify)
         ? "Power-cycle this receiver to load firmware 1.8, which AirPlay and Spotify need."
-        : sp.spotify ? "Spotify Connect needs Spotify Premium." : "";
+        : [rx.kind === "browser" && (sp.airplay || sp.spotify) ? "Only while the receiver page is open on that device." : "",
+          sp.spotify ? "Spotify Connect needs Spotify Premium." : ""].filter(Boolean).join(" ");
     }
     volRow.hidden = rx.volume === false; // Safari on iPhone/iPad: only the device's buttons set it
     mine.hidden = rx.id !== RX.id;

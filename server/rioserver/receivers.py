@@ -206,6 +206,7 @@ class ReceiverRegistry:
     def add(self, player) -> None:
         """Add a player the server feeds track by track (a QueuePlayer)."""
         player.label = self._names.get(player.key, "")
+        player.command_hook = lambda verb, p=player: bool(self.live_hook and self.live_hook(p, verb))
         player.start_position = self._start_position
         self._players[player.id] = player
 
