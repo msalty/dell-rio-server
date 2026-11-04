@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 ONLINE_SECONDS = 20  # NG firmware polls every few seconds
 # Commands where only the latest one matters: while a slider is dragged, a
 # newer value replaces one the receiver hasn't collected yet.
-LATEST_WINS = {"vol", "seek"}
+LATEST_WINS = {"vol", "seek", "meta"}
 QUEUE_FIRMWARE = (1, 6)  # NG firmware that takes queue changes without restarting the track
 PUSH_SETTLE = 15.0  # seconds a pushed queue change may take to reach the receiver
 
@@ -78,6 +78,9 @@ class Receiver:
     pending_qid: int | None = None  # a queue change sent, not yet fetched by the receiver
     pending_at: float = 0.0
     last_shuf: str | None = None  # shuffle setting at the previous poll
+    live: dict | None = None  # an AirPlay/Spotify session playing on it (speakers.py)
+    speakers: dict | None = None  # its AirPlay/Spotify switches, when that feature is on
+    resumable: bool = False  # a queue a live session replaced can be resumed
 
     @property
     def queue_capable(self) -> bool:
@@ -115,9 +118,22 @@ class Receiver:
             "queue_editable": self.queue_capable and self.queue_known,
             "first_seen": self.first_seen,
             "last_seen": self.last_seen,
-            "state": self.state,
+            "state": self._state_json(),
             "sleep_at": self.sleep_at,
+            "speakers": self.speakers,
+            "resumable": self.resumable and not self.live,
         }
+
+    def _state_json(self) -> dict:
+        if not self.live:
+            return self.state
+        # Shown like a Chromecast another app has taken over.
+        st = {k: v for k, v in self.state.items() if k not in ("track", "id")}
+        st["app"] = self.live["app"]
+        st["live"] = self.live
+        if self.live.get("paused") and st.get("st") == "play":
+            st["st"] = "pause"
+        return st
 
 
 class ReceiverRegistry:
@@ -141,6 +157,11 @@ class ReceiverRegistry:
         # Where a player should start a track it starts afresh (podcast
         # resume): (player id, track dict) -> milliseconds. Set by the app.
         self.start_position: Callable[[str, dict], int] | None = None
+        # Sees web-interface commands for Rio receivers first, so they can end
+        # a live session (speakers.py); returns True to drop the command.
+        self.live_hook: Callable[[Receiver, str], bool] | None = None
+        # Told when a receiver's name changes.
+        self.on_rename: Callable[[object], None] | None = None
 
     def touch(self, ip: str, *, mac: str | None = None, firmware: str | None = None,
               stage: str | None = None) -> Receiver:
@@ -215,6 +236,8 @@ class ReceiverRegistry:
         else:
             self._names.pop(r.key, None)
         r.label = name
+        if self.on_rename is not None:
+            self.on_rename(r)
         if self._names_path:
             try:
                 self._names_path.write_text(json.dumps(self._names, indent=1, sort_keys=True))
@@ -230,6 +253,8 @@ class ReceiverRegistry:
             return
         if verb == "shuffle":
             self.edit(r, "shuffle", on=str(args[1] if len(args) > 1 else "") in ("1", "true", "on"))
+            return
+        if self.live_hook is not None and self.live_hook(r, verb):
             return
         if verb in LATEST_WINS:
             for old in [c for c in r.commands if c[0] == verb]:

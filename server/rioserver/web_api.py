@@ -167,6 +167,9 @@ class WebAPI:
             web.post("/api/receivers/{id}/queue", self.receiver_queue_edit),
             web.post("/api/receivers/{id}/transfer", self.receiver_transfer),
             web.delete("/api/receivers/{id}", self.receiver_forget),
+            web.post("/api/receivers/{id}/speakers", self.receiver_speakers),
+            web.post("/api/receivers/{id}/resume", self.receiver_resume),
+            web.get("/api/receivers/{id}/live/art", self.receiver_live_art),
             web.get("/api/player/ws", self.player_ws),
             web.post("/api/playlists", self.playlist_create),
             web.post("/api/playlists/{id:\\d+}", self.playlist_update),
@@ -219,6 +222,7 @@ class WebAPI:
             "last_scan_time": lib.last_scan_time,
             "boot_enabled": self.ctx.config.enable_boot,
             "firmware": fw.choice if fw else None,
+            "speakers": self.ctx.speakers.available() if self.ctx.speakers is not None else None,
             "receivers": [r.to_json() for r in self.ctx.receivers.all()],
         })
 
@@ -521,6 +525,43 @@ class WebAPI:
         body = await req.json()
         self.ctx.receivers.rename(r, str(body.get("name", "")))
         return web.json_response(r.to_json())
+
+    # -- AirPlay and Spotify Connect ------------------------------------------
+    def _speakers(self):
+        if self.ctx.speakers is None:
+            raise web.HTTPConflict(text="AirPlay and Spotify Connect are turned off on this server")
+        return self.ctx.speakers
+
+    async def receiver_speakers(self, req: web.Request) -> web.Response:
+        """Switch a receiver's AirPlay / Spotify Connect speakers on or off."""
+        r = self._receiver(req)
+        if not isinstance(r, Receiver):
+            raise web.HTTPBadRequest(text="only Rio receivers can be AirPlay or Spotify speakers")
+        body = await _body(req)
+        self._speakers().configure(r, **{k: bool(body[k]) for k in ("airplay", "spotify") if k in body})
+        return web.json_response(r.to_json())
+
+    async def receiver_resume(self, req: web.Request) -> web.Response:
+        """Play the queue an AirPlay or Spotify session replaced, from where it was."""
+        r = self._receiver(req)
+        saved = self._speakers().resume(r) if isinstance(r, Receiver) else None
+        if not saved:
+            raise web.HTTPConflict(text="There is nothing to resume")
+        tracks = await self._run(self.lib.tracks_by_ids, saved["track_ids"])
+        if not tracks:
+            raise web.HTTPConflict(text="There is nothing to resume")
+        want = saved["track_ids"][saved["index"]] if 0 <= saved["index"] < len(saved["track_ids"]) else None
+        index = next((i for i, t in enumerate(tracks) if t["id"] == want), 0)
+        self._stop_fade(r)
+        self.ctx.receivers.play(r, tracks, index, False, saved["pos_ms"] if want is not None else None)
+        return web.json_response({"ok": True})
+
+    async def receiver_live_art(self, req: web.Request) -> web.Response:
+        r = self.ctx.receivers.get(req.match_info["id"])
+        art = self.ctx.speakers.art(r) if self.ctx.speakers is not None and isinstance(r, Receiver) else None
+        if art is None:
+            raise web.HTTPNotFound()
+        return web.Response(body=art[0], content_type=art[1], headers={"Cache-Control": "max-age=3600"})
 
     async def receiver_sleep(self, req: web.Request) -> web.Response:
         """Sleep timer: fade out, pause, and put the volume back for next time."""

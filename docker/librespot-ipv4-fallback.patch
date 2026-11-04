@@ -1,0 +1,16 @@
+diff --git a/discovery/src/server.rs b/discovery/src/server.rs
+index f4ce615..cdb2867 100644
+--- a/discovery/src/server.rs
++++ b/discovery/src/server.rs
+@@ -290,7 +290,10 @@ impl DiscoveryServer {
+ 
+         let (close_tx, close_rx) = oneshot::channel();
+ 
+-        let listener = match TcpListener::bind(address) {
++        // Hosts with IPv6 switched off can't bind [::]: fall back to IPv4.
++        let listener = match TcpListener::bind(address)
++            .or_else(|_| TcpListener::bind(SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), *port)))
++        {
+             Ok(listener) => listener,
+             Err(e) => {
+                 warn!("Discovery server failed to start: {e}");

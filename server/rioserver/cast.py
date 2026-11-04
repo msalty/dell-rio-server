@@ -217,27 +217,20 @@ class CastPlayer(players.QueuePlayer):
 class CastDiscovery:
     """Finds cast devices on the network and adds them to the registry."""
 
-    def __init__(self, cfg, registry, loop):
+    def __init__(self, cfg, registry, loop, shared=None):
+        from .mdns import SharedZeroconf
+
         self.cfg = cfg
         self.registry = registry
         self.loop = loop
+        self.shared = shared or SharedZeroconf()
         self.browser = None
         self.zconf = None
 
     def start(self) -> None:
-        import zeroconf
         from pychromecast.discovery import CastBrowser, SimpleCastListener
 
-        # Zeroconf created on the event loop's thread would run on that loop
-        # and refuse the blocking calls pychromecast makes; created anywhere
-        # else, it runs its own loop on its own thread.
-        made: list = []
-        t = threading.Thread(target=lambda: made.append(zeroconf.Zeroconf()), daemon=True)
-        t.start()
-        t.join()
-        if not made:
-            raise OSError("zeroconf failed to start")
-        self.zconf = made[0]
+        self.zconf = self.shared.get()
         listener = SimpleCastListener(self._found, self._lost, self._found)
         self.browser = CastBrowser(listener, self.zconf)
         self.browser.start_discovery()
