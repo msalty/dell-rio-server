@@ -6,10 +6,12 @@ constant-bitrate MP3 with LAME (or ffmpeg) and serves it to any number of
 HTTP listeners. Internet radio can reuse it later.
 
 - Pacing. Some sources (librespot's pipe backend) write as fast as they are
-  read, others (shairport-sync) in real time. The stream takes PCM at real
-  time, whatever the source does, and fills in silence while the source has
-  nothing (paused), so listeners get a steady stream and their buffers stay
-  at the same level.
+  read, others (shairport-sync) in real time. The stream is produced at
+  exactly real time by the server's clock, whatever the source does: a short
+  jitter buffer absorbs the source's hiccups, silence fills in when it has
+  nothing (paused, or late), and a source that gets too far ahead is
+  trimmed. A listener's buffer therefore stays at the level it started at:
+  a late source never eats into it.
 - Listeners. Each has its own bounded buffer. One that falls too far behind
   is dropped, so it never holds up the encoder or anyone else. A new
   listener starts with the last moment of the stream, so it can start
@@ -36,12 +38,14 @@ RATE = 44100
 FRAME_BYTES = 4  # s16le stereo
 BYTES_PER_SECOND = RATE * FRAME_BYTES
 TICK = 0.04  # seconds between pacing steps
-SOURCE_BUFFER = 2 * BYTES_PER_SECOND  # PCM held from a source that writes ahead of time
-IDLE_AFTER = 0.5  # seconds without PCM before silence fills in
-MAX_BEHIND = 0.5  # seconds a slow source may fall behind before the clock is reset
+SOURCE_BUFFER = BYTES_PER_SECOND  # PCM taken from a source that writes ahead of time
+JITTER = 0.4  # seconds of source PCM held before it plays (after a start or a gap)
+MAX_HELD = SOURCE_BUFFER + int(1.5 * BYTES_PER_SECOND)  # beyond this the source is trimmed
+HICCUP_MAX = 3.0  # source gaps shorter than this are hiccups, longer ones pauses
+LATE_WARN = 0.25  # seconds the pacing loop may be held up before it counts
 DEFAULT_BITRATE = 160  # kbps; the receiver's 74 MHz CPU struggles at 320 (firmware/README.md)
 LISTENER_LIMIT = 15  # seconds of MP3 a listener may fall behind before it is dropped
-BACKLOG = 0.75  # seconds of MP3 a new listener starts with
+BACKLOG = 1.5  # seconds of MP3 a new listener starts with (it then stays that far ahead)
 
 
 def find_encoder() -> str | None:
@@ -115,6 +119,7 @@ class LiveStream:
         self._source: asyncio.StreamReader | None = None
         self.running = False
         self.bytes_out = 0  # MP3 bytes produced since start
+        self.stats = self._new_stats()
 
     # -- the session -------------------------------------------------------
     async def start(self) -> None:
@@ -130,6 +135,7 @@ class LiveStream:
         self._backlog.clear()
         self._last_pcm = float("-inf")
         self.bytes_out = 0
+        self.stats = self._new_stats()
         self._tasks = [asyncio.create_task(self._pace()), asyncio.create_task(self._fan_out())]
         log.info("%s: live stream started (%s, %d kbps)", self.name, self.encoder, self.bitrate)
 
@@ -168,8 +174,6 @@ class LiveStream:
         if not self.running or not pcm:
             return
         self._pcm += pcm
-        if len(self._pcm) > SOURCE_BUFFER * 2:  # a source that ignores room()
-            del self._pcm[:len(self._pcm) - SOURCE_BUFFER * 2]
         self._last_pcm = time.monotonic()
 
     async def read_from(self, reader: asyncio.StreamReader) -> None:
@@ -185,36 +189,65 @@ class LiveStream:
                 return
             self.feed(chunk)
 
+    @staticmethod
+    def _new_stats() -> dict:
+        return {"hiccups": 0, "hiccup_s": 0.0, "trimmed_s": 0.0, "late": 0, "late_s": 0.0}
+
+    def take_stats(self) -> dict:
+        """What went wrong with the source and the pacing since the last call:
+        source hiccups filled with silence, source audio trimmed (it ran too
+        far ahead), and times the server itself held up the stream."""
+        st, self.stats = self.stats, self._new_stats()
+        return st
+
     async def _pace(self) -> None:
-        """Hand the encoder PCM at real time: the source's, or silence."""
+        """Hand the encoder exactly real time's worth of PCM: the source's,
+        or silence where it has none."""
         began = time.monotonic()
         sent = 0
+        holding = True  # filling the jitter buffer
+        gap_from: float | None = None  # when the source last ran dry while playing
+        expected = began
         while True:
             await asyncio.sleep(TICK)
             now = time.monotonic()
+            expected += TICK
+            if now - expected > LATE_WARN:
+                self.stats["late"] += 1
+                self.stats["late_s"] += now - expected
+            expected = now
             due = int((now - began) * BYTES_PER_SECOND) // FRAME_BYTES * FRAME_BYTES - sent
             if due <= 0:
                 continue
-            if len(self._pcm) >= due:
-                out = bytes(self._pcm[:due])
-                del self._pcm[:due]
-            elif self._pcm:
-                out = bytes(self._pcm[:len(self._pcm) // FRAME_BYTES * FRAME_BYTES])
-                del self._pcm[:len(out)]
-            elif now - self._last_pcm > IDLE_AFTER:
-                out = bytes(due)  # silence while the source is quiet
-            else:
-                out = b""
+            if holding and (len(self._pcm) >= JITTER * BYTES_PER_SECOND
+                            or (self._pcm and now - self._last_pcm > JITTER)):
+                holding = False
+                if gap_from is not None:
+                    gap = now - gap_from
+                    if gap < HICCUP_MAX:
+                        self.stats["hiccups"] += 1
+                        self.stats["hiccup_s"] += gap
+                    gap_from = None
+            out = b""
+            if not holding:
+                take = min(due, len(self._pcm) // FRAME_BYTES * FRAME_BYTES)
+                out = bytes(self._pcm[:take])
+                del self._pcm[:take]
+                if take < due:
+                    holding = True  # ran dry: build the jitter buffer up again
+                    gap_from = now
+            out += bytes(due - len(out))  # silence for the rest
+            if len(self._pcm) > MAX_HELD:
+                extra = (len(self._pcm) - MAX_HELD) // FRAME_BYTES * FRAME_BYTES
+                del self._pcm[:extra]
+                self.stats["trimmed_s"] += extra / BYTES_PER_SECOND
             sent += len(out)
-            if due - len(out) > MAX_BEHIND * BYTES_PER_SECOND:
-                sent = due + sent - len(out)  # the source fell behind: don't burst to catch up
-            if out:
-                try:
-                    self._proc.stdin.write(out)
-                    await self._proc.stdin.drain()
-                except (BrokenPipeError, ConnectionResetError, AttributeError):
-                    log.warning("%s: the MP3 encoder stopped", self.name)
-                    return
+            try:
+                self._proc.stdin.write(out)
+                await self._proc.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError, AttributeError):
+                log.warning("%s: the MP3 encoder stopped", self.name)
+                return
 
     # -- MP3 out -----------------------------------------------------------
     async def _fan_out(self) -> None:

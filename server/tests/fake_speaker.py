@@ -11,6 +11,7 @@ lines to a FIFO at $FAKE_SPEAKER_DIR/<RIO_HOOK_INSTANCE>.ctl:
 
     {"play": <seconds>, "title": .., "artist": .., "album": .., "sender": ..}
     {"pause": true} / {"resume": true} / {"stop": true} / {"volume": <n>}
+    {"stall": <seconds>}  (audio stops for a moment, as on a Wi-Fi hiccup)
 
 It appends "start" (with its arguments) to $FAKE_SPEAKER_DIR/<instance>.log
 each time it starts, so tests can see restarts.
@@ -51,6 +52,7 @@ class Fake:
             f.write("start " + json.dumps(args) + "\n")
         self.playing_until = 0.0
         self.paused = False
+        self.stalled_until = 0.0
         self.frames = 0
         self.lock = threading.Lock()
         self.publisher = None
@@ -102,6 +104,9 @@ class Fake:
             with self.lock:
                 self.playing_until = time.monotonic() + float(cmd["play"])
                 self.paused = False
+        elif "stall" in cmd:
+            # the audio stops coming for a moment, with no metadata to say so
+            self.stalled_until = time.monotonic() + float(cmd["stall"])
         elif cmd.get("pause"):
             self.paused = True
             if self.kind == "shairport":
@@ -132,7 +137,8 @@ class Fake:
         """shairport-sync writes in real time; librespot as fast as the pipe takes it."""
         out = sys.stdout.buffer
         while True:
-            if time.monotonic() < self.playing_until and not self.paused:
+            now = time.monotonic()
+            if now < self.playing_until and not self.paused and now >= self.stalled_until:
                 out.write(tone(352, self.frames))
                 out.flush()
                 self.frames += 352

@@ -868,12 +868,12 @@ int ui_poll_start(int timeout_ms, unsigned stall_ms, uint32_t play_ms, uint32_t 
     }
     snprintf(path, sizeof(path),
              "/ng/poll?mac=%s&st=%s&id=%lx&pos=%lu&vol=%d&qi=%d&qn=%d&shuf=%d&rep=%s&wake=%d&stall=%u"
-             "&under=%u&underms=%lu&gaps=%u&gapms=%lu&abuf=%lu&cpu=%d&dec=%d&disp=%d&net=%d&live=%d&ver=" VERSION,
+             "&under=%u&underms=%lu&gaps=%u&gapms=%lu&abuf=%lu&cpu=%d&dec=%d&disp=%d&net=%d&live=%d&lbuf=%d&ver=" VERSION,
              net_mac(), standby ? "standby" : states[P.state],
              (unsigned long)(P.have_track ? P.cur.fid : 0), (unsigned long)player_position_ms(),
              P.volume, P.qi, P.qlen, P.shuffle, repeats[P.repeat], wake_port, stall_ms,
              under, (unsigned long)under_ms, au.gaps, (unsigned long)au.gap_ms, (unsigned long)au.buffer_ms, cpu,
-             dec, disp, net, P.live);
+             dec, disp, net, P.live, player_buffered_ms());
     int r = http_async_start(&poll_req, path, poll_buf, sizeof(poll_buf), timeout_ms);
     if (r == 0) {
         player_underruns_reported();

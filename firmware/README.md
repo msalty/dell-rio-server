@@ -119,9 +119,12 @@ with these differences in `src/player.c`:
   (`AirPlay · Anna's iPhone`) in the title bar and the elapsed time instead
   of a progress bar. `cmd meta` updates the title, artist and album; a change
   redraws the screen once, as a new track does.
-- A smaller start-up buffer (16 KB, 0.8 s at 160 kbps, against 48 KB for
-  files). The server sends the last ~0.75 s of the stream at once, so playback
-  starts almost straight away and the buffer then stays at that level.
+- A start-up buffer of 32 KB (1.6 s at 160 kbps). The stream arrives in
+  real time, so that buffer is all the slack the receiver ever has: the server
+  sends the last 1.5 s of the stream at once on connecting, and makes the
+  stream at exactly real time even when its source stalls, so the level holds.
+  After running dry, the receiver builds all 32 KB up again: one gap rather
+  than a string of stutters. The poll reports the level as `lbuf` (ms).
 - When the connection drops, the firmware reconnects from scratch (there's no
   `Range` to resume with) up to 3 times, 0.5, 1 and 2 s apart, then stops with
   "Stream ended". The end of a stream is never "the next track".

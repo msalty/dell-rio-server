@@ -13,10 +13,11 @@
 #define PREBUFFER (48 * 1024)
 #define REBUFFER (16 * 1024)
 #define OUT_FRAMES 7200 /* 1152 frames upsampled from 8kHz to 44.1kHz */
-/* A live stream starts sooner: the server sends the last ~0.75 s of it at
- * once and then keeps up in real time, so a smaller buffer keeps the delay
- * down (16 KB is 0.8 s at 160 kbps). */
-#define LIVE_PREBUFFER (16 * 1024)
+/* A live stream arrives in real time, so the buffer it starts with is all the
+ * slack it ever has: the server sends the last 1.5 s at once on connecting.
+ * 32 KB is 1.6 s at 160 kbps; after running dry it builds all of it up again,
+ * so a slow patch upstream costs one gap rather than a string of stutters. */
+#define LIVE_PREBUFFER (32 * 1024)
 #define LIVE_RETRIES 3      /* reconnects after a live stream drops, before giving up */
 #define LIVE_RETRY_MS 500   /* doubled on each attempt */
 #define LIVE_STEADY (64 * 1024) /* received since reconnecting: the connection is fine again */
@@ -536,6 +537,16 @@ void player_underruns_reported(void)
         starved_at = time_ms();
 }
 
+int player_buffered_ms(void)
+{
+    if (!P.live)
+        return -1;
+    unsigned long br = mfr.header.bitrate;
+    if (!br)
+        return -1;
+    return (int)((uint64_t)(in_end - in_start) * 8000 / br);
+}
+
 uint32_t player_position_ms(void)
 {
     if (!P.have_track)
@@ -728,7 +739,7 @@ int player_service(int *busy)
             }
             audio_idle(); /* reported as a run-out, not a dropout */
             P.state = P_BUFFERING;
-            threshold = REBUFFER;
+            threshold = P.live ? LIVE_PREBUFFER : REBUFFER;
             rebuffer = 1;
             return fd;
         }

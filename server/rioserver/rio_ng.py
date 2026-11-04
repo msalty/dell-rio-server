@@ -393,6 +393,9 @@ class NGProtocol:
         if t:
             state["track"] = track_state(t)
         playing = f' during "{t["title"]}" ({t["bitrate"]} kbps)' if t else ""
+        speakers = getattr(self.ctx, "speakers", None)
+        if not t and speakers is not None:
+            playing = speakers.describe(r, _int(q, "lbuf"))
         under = max(0, _int(q, "under") or 0)
         under_ms = max(0, _int(q, "underms") or 0)
         if under or under_ms:
@@ -410,7 +413,6 @@ class NGProtocol:
         # Before the commands are collected, so a queue correction this
         # report calls for goes back in this reply.
         self.ctx.receivers.queue_reported(r, state)
-        speakers = getattr(self.ctx, "speakers", None)
         if speakers is not None:
             speakers.polled(r, q.get("live", ""))
         if self.tracker is not None:

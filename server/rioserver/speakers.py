@@ -671,11 +671,38 @@ class Speakers:
             return
         if live == "1":
             sess.confirmed = True
+            self._report_stream(r, sess)
             return
         if sess.confirmed or time.monotonic() - sess.started > CONFIRM_SECONDS:
             # Stopped, or playing something else, on the receiver itself.
             log.info("%s: playback changed on the receiver; ending the %s session", r.name, APP_NAMES[sess.kind])
             self.end(r.key, kick=True, stop_receiver=False)
+
+    def _report_stream(self, r: Receiver, sess: Session) -> None:
+        """Log what went wrong upstream of the receiver since its last poll, so
+        a receiver running out of music can be traced to its cause."""
+        st = self.streams.get(r.key)
+        if st is None or not st.running:
+            return
+        s = st.take_stats()
+        app = APP_NAMES[sess.kind]
+        if s["hiccups"] and sess.paused_at is None:
+            log.warning("%s: the %s source stalled %s (%.1f s in all); filled with silence", r.name, app,
+                        "once" if s["hiccups"] == 1 else f"{s['hiccups']} times", s["hiccup_s"])
+        if s["trimmed_s"] >= 0.05:
+            log.warning("%s: the %s source ran %.1f s ahead; skipped it to keep the delay down",
+                        r.name, app, s["trimmed_s"])
+        if s["late"]:
+            log.warning("%s: the server held up the %s stream %s (%.1f s in all); it is busy or short of CPU",
+                        r.name, app, "once" if s["late"] == 1 else f"{s['late']} times", s["late_s"])
+
+    def describe(self, r: Receiver, lbuf: int | None) -> str:
+        """For the server's log: ' during the AirPlay stream (it held 1.2 s)'."""
+        sess = self.sessions.get(r.key)
+        if sess is None:
+            return ""
+        held = f" (the receiver held {lbuf / 1000:.1f} s of it)" if lbuf is not None and lbuf >= 0 else ""
+        return f" during the {APP_NAMES[sess.kind]} stream{held}"
 
     def resume(self, r: Receiver) -> dict | None:
         saved = self.saved.pop(r.key, None)

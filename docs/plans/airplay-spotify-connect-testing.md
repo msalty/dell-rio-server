@@ -84,8 +84,18 @@ file to pin a build).
    `RIO_AIRPLAY_PORT_BASE` (5100) and `RIO_SPOTIFY_PORT_BASE` (5300) move the
    ports.
 5. For detail in the server log, `RIO_LOG_LEVEL=DEBUG` shows each poll
-   (with the receiver's `cpu`, `gaps` and `under`) and shairport-sync's and
-   librespot's own output.
+   (with the receiver's `cpu`, `gaps`, `under` and `lbuf`) and
+   shairport-sync's and librespot's own output.
+6. **Reading "ran out of music" during a session.** The warning now says
+   how much of the stream the receiver held. Next to it, the server logs
+   what happened upstream: `the AirPlay source stalled …` (the phone or its
+   Wi-Fi; filled with silence, so it no longer starves the receiver),
+   `… ran … ahead; skipped it` (the source caught up in a burst), and `the
+   server held up the … stream` (the server was busy or short of CPU). If
+   the receiver still runs out with none of those around it, the likely
+   cause is the network to the receiver, or its audio clock running faster
+   than the server's (then the runs-out come at regular intervals, and
+   `lbuf` in the debug log drifts down).
 
 ## 4. Checklist on real hardware
 
@@ -98,6 +108,10 @@ From the plan, plus what I couldn't check here:
       within a few seconds; Now Playing shows "AirPlay · <phone name>" (or
       "Spotify · …") with the title, artist and album, and changes with the
       next track.
+- [ ] **No runs-out during a long session** (the first test on hardware
+      ran out of data after about 7 minutes and then stuttered for ~15 s;
+      the server now fills source stalls in and the receiver keeps 1.6 s in
+      hand). Note any `stalled`, `held up` or `ran out` lines in the log.
 - [ ] **CPU and dropouts at 160 kbps.** Let it play for 10+ minutes. The
       server log warns about dropouts (`audio dropped out`), running out of
       data (`ran out of music`) and CPU ≥ 95%. With `RIO_LOG_LEVEL=DEBUG`
@@ -247,6 +261,9 @@ Unfinished or left for later:
 - Cover art: AirPlay's comes from the phone and the web interface shows it;
   Spotify's is a URL to Spotify's CDN, which the browser loads directly.
   The receiver itself has no art.
-- The receiver's start-up buffer for live streams is 16 KB (0.8 s at
-  160 kbps). The real `under`/`gaps` figures on hardware will tell whether
-  it should be larger, or could be smaller to cut the delay.
+- The receiver keeps 1.6 s of a live stream in hand (and the server 0.4 s
+  of jitter buffer), raised from 0.8 s after the first test on hardware ran
+  out of data. That adds about a second to the delay. If runs-out turn out to
+  come from the receiver's audio clock drifting against the server's, the
+  next step is for the server to follow `lbuf` and stretch or squeeze the
+  stream very slightly (as shairport-sync does for its own output).

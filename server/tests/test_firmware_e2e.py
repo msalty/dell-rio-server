@@ -719,6 +719,12 @@ def test_airplay_plays_live_on_the_receiver(music_dir, tmp_path):
             r = api(upstream, "/api/receivers")[0]
             assert r["state"]["app"] == "AirPlay" and r["state"]["live"]["title"] == "Live Song"
 
+            # the phone's audio stalls for a second: silence fills in upstream,
+            # so the receiver doesn't run out of data
+            control(fakes, "airplay-0", stall=1.0)
+            time.sleep(4)
+            assert "ran out of data" not in rx.console(), rx.console()
+
             # the connection drops: it reconnects and plays on
             cut()
             assert wait_until(lambda: "reconnecting" in rx.console()), rx.console()

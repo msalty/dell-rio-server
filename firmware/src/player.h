@@ -63,6 +63,8 @@ void player_seek_ms(uint32_t ms);
 void player_set_shuffle(int on);
 void player_set_volume(int v);
 uint32_t player_position_ms(void);
+/* How much of a live stream is buffered (ms), or -1 when not playing one. */
+int player_buffered_ms(void);
 /* Times the stream ran dry mid-track since the last report, and how long
  * playback waited for data (a wait still going on counts up to now). */
 void player_underruns(unsigned *count, uint32_t *ms);

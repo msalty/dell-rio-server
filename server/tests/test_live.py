@@ -160,3 +160,31 @@ def test_metadata_changes_are_reported_once():
     st.set_meta(volume=40)
     assert seen == [{"title": "Song", "artist": "Artist"}, {"volume": 40}]
     assert st.meta == {"title": "Song", "artist": "Artist", "volume": 40}
+
+
+async def test_a_stalling_source_never_slows_the_stream_down():
+    """A source that stalls (a phone's Wi-Fi hiccup) is filled in with
+    silence: listeners still get exactly real time, so the buffer they
+    started with is never eaten into, and the stall is reported."""
+    st = LiveStream("test", bitrate=160)
+    await st.start()
+    try:
+        lst = st.listen()
+
+        async def stalling():
+            await feeder(st, 1.5)
+            await asyncio.sleep(0.8)  # the source stalls
+            await feeder(st, 1.5)
+        feed = asyncio.create_task(stalling())
+        await asyncio.sleep(0.6)
+        await collect(lst, 0.1)  # what it had in hand by then
+        got = await collect(lst, 3.5)
+        feed.cancel()
+        seconds = decoded_seconds(got)[0]
+        assert 3.2 < seconds < 3.9, seconds  # 3.5 s of stream in 3.5 s, stall or not
+        stats = st.take_stats()
+        assert stats["hiccups"] == 1 and 0.4 < stats["hiccup_s"] < 1.5, stats
+        assert stats["late"] == 0, stats
+        assert st.take_stats()["hiccups"] == 0  # reported once
+    finally:
+        await st.stop()
