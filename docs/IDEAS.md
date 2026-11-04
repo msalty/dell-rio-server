@@ -198,6 +198,104 @@ need signed, expiring stream URLs. The receivers' protocol stays open, as
 the hardware can't authenticate. Small to medium. Not needed while the
 server stays on the home network.
 
+## Receivers as AirPlay and Spotify Connect speakers
+
+Planned in detail, as a prompt ready to start an implementation session:
+[`docs/plans/airplay-spotify-connect.md`](plans/airplay-spotify-connect.md).
+The server runs shairport-sync and librespot for each receiver, encodes what
+they receive as a live MP3 stream, and the firmware gets a live-stream mode.
+
+## Internet radio
+
+Add stations by URL, or search a public directory such as
+radio-browser.info. The server relays each stream as plain HTTP MP3, since
+the receivers can't fetch HTTPS (the same reason podcasts are downloaded),
+and converts streams that aren't MP3 (AAC, Ogg) with ffmpeg. A Radio menu on
+the receiver sits next to Podcasts, and the web interface lists stations
+with their logos.
+
+Builds on the AirPlay plan's groundwork: the firmware's live-stream mode
+(no size or duration, reconnect from scratch) and the server's live MP3
+source. With those in place this is mostly a station list, the relay, and
+the station's current song (ICY `StreamTitle`) shown on the display. Medium
+on its own, small after the AirPlay work.
+
+## Home Assistant integration and announcements
+
+Show each receiver (and speaker) in Home Assistant as a media player, via
+MQTT discovery, so automations can drive them: pause when the doorbell
+rings, start a playlist on arriving home, play quietly at bedtime.
+
+**Announcements** are the most useful part: an API call (and Home Assistant
+service) that lowers or pauses the music on chosen receivers, plays a chime
+or a spoken message (Home Assistant's text-to-speech gives an MP3 URL),
+then carries on where the music was. That needs the server to interrupt a
+queue and resume it, much like moving playback between rooms already does.
+Medium. MQTT means a broker setting (`RIO_MQTT_URL`) and the paho-mqtt
+library.
+
+## A clock and information screen when idle
+
+The receiver's 128×64 display sits idle when nothing plays. It could show a
+large clock, the next alarm, and optionally the weather or today's first
+calendar event, sent by the server. A receiver on a nightstand becomes a
+clock radio, which suits the alarms already there.
+
+Mostly firmware drawing, with the time and data coming from the server in
+the poll reply (the receiver has no clock it can trust). Keep it dim or
+switch the backlight off at night (display ioctl 11). Weather needs a
+location and a free source such as Open-Meteo, so make it optional. Small to
+medium.
+
+## Party mode: guests add songs with a QR code
+
+Show a QR code (on the web interface, or printed) that opens a cut-down page
+for one receiver: guests search the library and add songs to its Up Next,
+but can't skip, clear the queue, change the volume or reach other
+receivers. Optionally limit how many songs each guest can have queued, and
+show who added what.
+
+Needs a separate, limited guest link (a random token in the URL) so the
+full web interface stays private. Small: Up Next and its API already exist.
+
+## Smart playlists from listening history
+
+Plays are already recorded on every device, so add playlists built from
+them, next to Top 25 and Recently Played on the receivers and in the web
+interface:
+
+- **Forgotten favourites:** played often, but not in the last year.
+- **Never played:** songs with no plays, shuffled.
+- **On this day:** what was played on this date in earlier years.
+- **Recently added, not yet played.**
+
+Small: SQL queries in the server, plus menu entries.
+
+## A year in review
+
+A stats page for each year: top artists, albums and songs, hours listened,
+the busiest day and hour, which room plays most, new albums that got the
+most plays. A fun use of history the server already keeps, and a natural
+place to start a "Top songs of 2026" playlist from. Small.
+
+## Audiobooks
+
+Treat an `Audiobooks` folder in the music library like podcasts: each book
+resumes where it was left on any device, a book's files play in order as
+one item, chapter markers (from files or ID3 CHAP frames) give previous and
+next chapter, and the sleep timer can stop at the end of a chapter. An
+Audiobooks menu on the receiver next to Podcasts. Much of the
+resume-anywhere machinery exists for podcast episodes already. Small to
+medium.
+
+## Per-receiver limits
+
+Settings for each receiver: a maximum volume, quiet hours (a lower cap, or
+no alarms and remote starts), and optionally restricting it to chosen
+playlists or genres, for a child's room or a bedroom. Enforced by the server
+for commands from the web interface, and by the firmware for its own
+volume keys and menus (sent with the poll reply). Small.
+
 ## Considered and set aside
 
 - **Synchronised multi-room playback across Rio receivers.** The receivers
