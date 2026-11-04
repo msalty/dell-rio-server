@@ -122,6 +122,7 @@ class Receiver:
             "sleep_at": self.sleep_at,
             "speakers": self.speakers,
             "resumable": self.resumable and not self.live,
+            "queue_saved": self.resumable,  # kept for Resume Up Next while a live session plays
         }
 
     def _state_json(self) -> dict:

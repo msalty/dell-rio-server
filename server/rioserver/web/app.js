@@ -641,6 +641,7 @@ function nowState() {
     return {
       // an offline receiver isn't playing, whatever it last reported
       t, playing: !!r && r.online && rxPlaying(st), remote: true, r, st,
+      lv: !t && r && r.online ? st.live || null : null, // an AirPlay or Spotify session
       shuffle: st.shuf === "1", repeat: st.rep || "off",
       sub: t ? `${t.artist} — ${t.album}` : (r ? `${r.name} · ${!r.online ? "offline" : st.live ? liveText(st.live) : st.app ? `in use by ${st.app}` : "idle"}` : ""),
     };
@@ -702,16 +703,18 @@ function renderNowPlaying() {
   document.body.classList.toggle("is-playing", !!playing);
   for (const el of document.querySelectorAll(".play-host")) el.classList.toggle("playing", !!playing);
   $("#btn-play").setAttribute("aria-label", playing ? "Pause" : "Play");
-  $("#np-title").textContent = t ? t.title : "Nothing playing";
-  $("#np-sub").textContent = t ? ns.sub : (ns.sub || "Pick something from your library");
+  const lv = ns.lv;
+  document.body.classList.toggle("is-live", !!lv);
+  $("#np-title").textContent = t ? t.title : lv ? liveTitle(lv) : "Nothing playing";
+  $("#np-sub").textContent = t ? ns.sub : lv ? liveSub(lv) : (ns.sub || "Pick something from your library");
   const msKey = !Player.target && t ? String(t.id) : "";
   if (Player._msKey !== msKey) { Player._msKey = msKey; updateMediaSession(t); }
   const art = $("#np-art");
-  const key = t ? `${t.album_id}` : "";
+  const key = t ? `${t.album_id}` : lv ? `live:${lv.art || liveTitle(lv)}` : "";
   if (art.dataset.key !== key) {
     art.dataset.key = key;
-    art.replaceChildren(t ? cover(t.album_id, t.album) : "");
-    tintFrom(document.documentElement, t ? albumArtUrl(t.album_id) : null);
+    art.replaceChildren(t ? cover(t.album_id, t.album) : lv ? liveCover(lv) : "");
+    tintFrom(document.documentElement, t ? albumArtUrl(t.album_id) : lv && lv.art ? lv.art : null);
   }
   renderModes();
   NowPlaying.render(ns);
@@ -727,6 +730,10 @@ function progressNow() {
       pos = Number(st.pos || 0);
       if (st.st === "play" && Player._statusAt && Player.receiver.online) pos += Date.now() - Player._statusAt;
       pos = Math.min(pos, dur);
+    } else if (st && st.live) {
+      // a live stream has no length: how long it has played
+      pos = Number(st.pos || 0);
+      if (st.st === "play" && Player._statusAt && Player.receiver.online) pos += Date.now() - Player._statusAt;
     }
   } else if (Player.current) {
     pos = (audio.currentTime || 0) * 1000;
@@ -1086,10 +1093,10 @@ const NowPlaying = {
           h("div", { class: "scrub" }, h("span", { class: "t-pos" }, "0:00"), seek, h("span", { class: "t-dur" }, "0:00")),
           h("div", { class: "buttons" },
             h("button", { class: "icon-btn mode-shuffle", "aria-label": "Shuffle", html: ICON.shuffle, onclick: toggleShuffle }),
-            h("button", { class: "icon-btn", "aria-label": "Previous", html: ICON.prev, onclick: () => Player.prev() }),
+            h("button", { class: "icon-btn skip", "aria-label": "Previous", html: ICON.prev, onclick: () => Player.prev() }),
             h("button", { class: "play-btn", "aria-label": "Play/pause", onclick: () => Player.toggle(),
               html: '<svg viewBox="0 0 24 24" class="i-play"><path d="M7 4.5v15l13-7.5z" class="fill"/></svg><svg viewBox="0 0 24 24" class="i-pause"><path d="M7 4h3.5v16H7zM13.5 4H17v16h-3.5z" class="fill"/></svg>' }),
-            h("button", { class: "icon-btn", "aria-label": "Next", html: ICON.next, onclick: () => Player.next() }),
+            h("button", { class: "icon-btn skip", "aria-label": "Next", html: ICON.next, onclick: () => Player.next() }),
             h("button", { class: "icon-btn mode-repeat", "aria-label": "Repeat", onclick: cycleRepeat,
               html: ICON.repeat + '<span class="badge-one" aria-hidden="true">1</span>' })),
           h("div", { class: "extras" }, icon("speaker"), vol)),
@@ -1131,26 +1138,31 @@ const NowPlaying = {
     const self = RX.on && Player.target === RX.id;
     this.where.textContent = self ? `This device · ${RX.name}` : Player.target ? `Playing on ${ns.r ? ns.r.name : "a receiver"}` : "Playing in this browser";
     this.where.classList.toggle("is-self", self);
-    const key = t ? String(t.album_id) : "";
+    const lv = ns.lv;
+    const key = t ? String(t.album_id) : lv ? `live:${lv.art || liveTitle(lv)}` : "";
     if (this.art.dataset.key !== key) {
       this.art.dataset.key = key;
-      this.art.replaceChildren(t ? cover(t.album_id, t.album) : cover(null, "RioServer"));
-      this.bg.style.backgroundImage = t ? `url("${albumArtUrl(t.album_id)}")` : "";
+      this.art.replaceChildren(t ? cover(t.album_id, t.album) : lv ? liveCover(lv) : cover(null, "RioServer"));
+      const bg = t ? albumArtUrl(t.album_id) : lv && lv.art ? lv.art : "";
+      this.bg.style.backgroundImage = bg ? `url("${bg}")` : "";
     }
     // Only when the song changes: rewriting the text would reset the ticker.
-    const tkey = t ? `${t.id}|${t.title}|${t.album}|${t.artist}` : `none|${ns.sub}`;
+    const tkey = t ? `${t.id}|${t.title}|${t.album}|${t.artist}`
+      : lv ? `live|${liveTitle(lv)}|${liveSub(lv)}` : `none|${ns.sub}`;
     if (this.tkey !== tkey) {
       this.tkey = tkey;
-      this.title.textContent = t ? t.title : "Nothing playing";
+      this.title.textContent = t ? t.title : lv ? liveTitle(lv) : "Nothing playing";
       this.sub.replaceChildren(...(t ? [
         t.podcast_id ? h("a", { href: `#/podcasts/${t.podcast_id}`, onclick: () => this.close() }, t.album)
           : h("a", { href: `#/albums/${t.album_id}`, onclick: () => this.close() }, t.album),
         " · ", t.artist,
-      ] : [ns.sub || "Pick something from your library"]));
+      ] : lv ? [liveSub(lv)] : [ns.sub || "Pick something from your library"]));
       this.title.title = this.title.textContent;
       for (const tk of this.tickers) tk.run();
     }
-    if (Player.target && Queue.remoteKey() !== this.qkey) this.renderQueue();
+    const liveKey = lv ? `${lv.app}|${lv.sender}` : "";
+    if (this.liveKey !== liveKey) { this.liveKey = liveKey; this.renderQueue(); }
+    else if (Player.target && Queue.remoteKey() !== this.qkey) this.renderQueue();
   },
   async renderQueue(force) {
     if (!this.built || this.el.hidden) return;
@@ -1162,6 +1174,15 @@ const NowPlaying = {
       return;
     }
     this.qkey = Queue.remoteKey();
+    const ns = nowState();
+    if (ns.lv) {
+      // An AirPlay or Spotify session has the receiver: its own queue waits.
+      this.qtools.replaceChildren();
+      this.qlist.replaceChildren();
+      this.qnote.textContent = `${liveText(ns.lv, false)} is playing on ${ns.r.name}. Stop ends it.` +
+        (ns.r.queue_saved ? " Then “Resume Up Next” on its card plays what was queued here before." : "");
+      return;
+    }
     const tracks = q.tracks || [];
     const idx = q.index;
     this.qtools.replaceChildren(...[
@@ -2184,6 +2205,13 @@ function liveText(live, withTrack = true) {
   const song = [live.title, live.artist].filter(Boolean).join(" – ");
   return withTrack && song ? `${from} · ${song}` : from;
 }
+
+const liveTitle = (lv) => lv.title || liveText(lv, false);
+function liveSub(lv) {
+  const song = [lv.artist, lv.album].filter(Boolean).join(" — ");
+  return [song, `${liveText(lv, false)}${lv.paused ? " · Paused" : ""}`].filter(Boolean).join(" · ");
+}
+const liveCover = (lv) => cover(null, liveTitle(lv), null, lv.art || undefined);
 
 function receiverIdle(rx) {
   if (rx.kind === "rio" && rx.firmware === "stock") {

@@ -531,3 +531,9 @@ html { touch-action: manipulation; -webkit-text-size-adjust: 100%; text-size-adj
   .where-pill { max-width: 128px; padding: 4px 9px 4px 7px; }
 }
 
+
+/* An AirPlay or Spotify session on the receiver Music goes to: no queue,
+   length or seeking; Play/Pause (which ends it) and the volume still work. */
+body.is-live #btn-shuffle, body.is-live #btn-prev, body.is-live #btn-next, body.is-live #btn-repeat,
+body.is-live .mode-shuffle, body.is-live .mode-repeat, body.is-live .np-main .skip,
+body.is-live .seek-input, body.is-live .t-dur { visibility: hidden; }

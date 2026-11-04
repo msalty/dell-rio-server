@@ -88,7 +88,8 @@ class Fake:
                 self.item("core", "asar", cmd.get("artist", "").encode())
                 self.item("core", "asal", cmd.get("album", "").encode())
                 self.item("ssnc", "mden")
-                self.item("ssnc", "PICT", b"\xff\xd8\xff\xe0fake jpeg")
+                art = os.environ.get("FAKE_SPEAKER_ART")  # a real image, for screenshots
+                self.item("ssnc", "PICT", open(art, "rb").read() if art else b"\xff\xd8\xff\xe0fake jpeg")
                 self.item("ssnc", "pvol", b"-15.00,-20.00,-96.30,0.00")
             else:
                 self.event(PLAYER_EVENT="session_connected", USER_NAME="someone", CONNECTION_ID="1")
