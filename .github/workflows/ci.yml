@@ -12,7 +12,7 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi qemu-user ffmpeg zopfli
+          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi qemu-user ffmpeg lame zopfli
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

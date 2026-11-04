@@ -57,7 +57,8 @@ def encoder_command(encoder: str, bitrate: int) -> list[str]:
         return ["lame", "--quiet", "-r", "-s", "44.1", "--bitwidth", "16", "--signed", "--little-endian",
                 "-m", "j", "--cbr", "-b", str(bitrate), "-q", "5", "--flush", "-", "-"]
     return ["ffmpeg", "-loglevel", "error", "-f", "s16le", "-ar", str(RATE), "-ac", "2", "-i", "pipe:0",
-            "-c:a", "libmp3lame", "-b:a", f"{bitrate}k", "-f", "mp3", "-flush_packets", "1", "pipe:1"]
+            "-c:a", "libmp3lame", "-b:a", f"{bitrate}k", "-f", "mp3", "-id3v2_version", "0", "-write_xing", "0",
+            "-flush_packets", "1", "pipe:1"]
 
 
 def _frame_start(data: bytes) -> int:
