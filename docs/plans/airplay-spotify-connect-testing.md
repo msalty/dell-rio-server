@@ -233,12 +233,14 @@ Verified in this environment:
 
 Not verified:
 
-- Anything with a real iPhone, Mac, Spotify app or real receiver (the
-  checklist above).
-- The **arm64 image** itself. Debian's package mirrors are blocked in this
-  sandbox, so the Debian-based build stages only ran on CI, and CI builds
-  amd64 only. The arm64 commands were checked on Ubuntu (see above).
-  The first Publish run is the real test.
+- Most of the checklist above on real devices. AirPlay from an iPhone to a
+  real Rio receiver has been tried (it played, with the cover on its card);
+  the run-outs that showed after ~7 minutes led to the stall fix and the
+  bigger receiver cushion, which haven't been tried on hardware yet. Spotify,
+  browser receivers and Chromecasts haven't been tried with real devices.
+- The arm64 image now builds in the Publish workflow (runs 28, 30 and 31
+  succeeded), but whether it runs was only checked on the box you tested
+  on.
 - The Umbrel steps in section 2.
 - How mDNS from python-zeroconf and librespot's libmdns behaves next to
   Umbrel's avahi on a real LAN. The plan's investigation covered it; I
