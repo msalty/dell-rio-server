@@ -1,8 +1,17 @@
 # Testing AirPlay and Spotify Connect (branch `claude/airplay-spotify-connect`)
 
-Notes for trying the branch on real receivers before deciding whether to
-merge it. The plan is in `airplay-spotify-connect.md`. No pull request
-has been opened.
+Notes for trying the branch on real receivers. The plan is in
+`airplay-spotify-connect.md`. A pull request is open for the branch.
+
+**Latest test image** (Publish run 31, commit `1d7060f`, with everything up
+to Chromecasts as AirPlay speakers), for amd64 and arm64:
+
+- `ghcr.io/msalty/dell-rio-server:sha-1d7060f`: this build, pinned
+- `ghcr.io/msalty/dell-rio-server:claude-airplay-spotify-connect`: whatever
+  the branch's Publish workflow built last (the same build, until it runs
+  again)
+
+Commits after `1d7060f` that only change documentation need no new image.
 
 ## 1. Get a test image
 
@@ -19,18 +28,18 @@ has been opened.
    It doesn't touch `:main`, `:latest` or any version tag, so the published
    app keeps its image.
 
-**Build time.** CI's Docker job (amd64 only, no cache) built the whole image
-in **about 3 minutes** (09:21:43 → 09:24:42 on the first push). The Publish
-workflow builds both architectures in one job on the same 4-CPU runner.
+**Build time.** Measured on GitHub's runners:
+
+| Build | Time |
+|---|---|
+| CI's Docker job (amd64 only, no cache) | about 3 minutes |
+| First Publish run (amd64 + arm64, no cache) | about 10 minutes |
+| Later Publish runs (librespot and shairport-sync cached) | about 1–1.5 minutes |
+
 librespot and shairport-sync are cross-compiled on the runner, not under
-QEMU, so the arm64 build costs about as much as the amd64 one. Here
-(4 CPUs) the arm64 cross-builds took **51 s** for shairport-sync with its
-FFmpeg and **171 s** for librespot. Expect roughly **6–10 minutes** for the
-first Publish run, and much less afterwards thanks to the GHA layer cache.
-Only the final stage's `apt-get install lame libconfig11 libpopt0` and
-`pip install` run under emulation for arm64, as `pip install` did before.
-I didn't run the Publish workflow myself (it pushes to ghcr.io), so those
-numbers are an estimate: please note the real time when you run it.
+QEMU, so the arm64 build costs about as much as the amd64 one. Only the
+final stage's `apt-get install lame libconfig11 libpopt0` and `pip install`
+run under emulation for arm64, as `pip install` did before.
 
 ## 2. Point Docker Compose or Umbrel at it
 
@@ -39,6 +48,7 @@ numbers are an estimate: please note the real time when you run it.
 
 ```yaml
     image: ghcr.io/msalty/dell-rio-server:claude-airplay-spotify-connect
+    # or, to stay on this exact build: ghcr.io/msalty/dell-rio-server:sha-1d7060f
 ```
 
 then `docker compose pull && docker compose up -d`. To go back, restore the
@@ -51,7 +61,8 @@ file. Over SSH (`ssh umbrel@umbrel.local`):
    app's id in the msalty store, for example `msalty-rioserver-ng`.
 2. Edit `~/umbrel/app-data/<app-id>/docker-compose.yml` and change the
    `image:` of the server service to
-   `ghcr.io/msalty/dell-rio-server:claude-airplay-spotify-connect`. Drop any
+   `ghcr.io/msalty/dell-rio-server:sha-1d7060f` (or
+   `:claude-airplay-spotify-connect` to follow the branch). Drop any
    `@sha256:…` digest after it.
 3. Restart the app: in umbrelOS, right-click the app › Restart, or
    `umbreld client apps.restart.mutate --appId <app-id>`.
