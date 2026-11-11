@@ -15,12 +15,14 @@ from .config import Config
 from .firmware import FirmwareStore
 from .history import PlayTracker
 from .library import Library
+from .mdns import SharedZeroconf
 from .nfs import BootServer
 from .podcasts import Podcasts
 from .receivers import ReceiverRegistry
 from .rio_classic import ClassicProtocol
 from .rio_ng import NGProtocol
 from .rpc import RpcDispatcher, serve_rpc
+from .speakers import Speakers
 from .ssdp import local_ip_for, serve_ssdp
 from .watcher import LibraryWatcher
 from .web_api import WebAPI
@@ -40,6 +42,7 @@ class Context:
     podcasts: Podcasts | None = None
     alarms: AlarmClock | None = None
     web: WebAPI | None = None
+    speakers: Speakers | None = None
 
 
 def build_app(ctx: Context) -> web.Application:
@@ -48,6 +51,8 @@ def build_app(ctx: Context) -> web.Application:
     app.router.add_routes(NGProtocol(ctx).routes())
     ctx.web = WebAPI(ctx)
     app.router.add_routes(ctx.web.routes())
+    if ctx.speakers is not None:
+        app.router.add_routes(ctx.speakers.routes())
 
     async def index(request: web.Request) -> web.FileResponse:
         return web.FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
@@ -137,9 +142,15 @@ async def run(cfg: Config) -> None:
     def discovered(ip: str, kind: str, mac: str | None) -> None:
         ctx.receivers.touch(ip, mac=mac, stage="booting" if kind == "boot" else "running")
 
+    zeroconf = SharedZeroconf()
+    if cfg.airplay or cfg.spotify:
+        ctx.speakers = Speakers(cfg, ctx.receivers, zeroconf)
+        ctx.receivers.on_rename = lambda r: ctx.speakers.poke()
+        await ctx.speakers.start()
+
     if cfg.cast:
         try:
-            discovery = CastDiscovery(cfg, ctx.receivers, asyncio.get_running_loop())
+            discovery = CastDiscovery(cfg, ctx.receivers, asyncio.get_running_loop(), zeroconf)
             discovery.start()
             closers.append(discovery)
             log.info("looking for Chromecasts and Google speakers (mDNS)")
@@ -166,6 +177,10 @@ async def run(cfg: Config) -> None:
     try:
         await asyncio.Event().wait()
     finally:
+        if ctx.speakers is not None:
+            await ctx.speakers.close()  # withdraws its mDNS records before discovery closes zeroconf
+            if not cfg.cast and zeroconf.started:
+                await asyncio.to_thread(zeroconf.get().close)
         ctx.watcher.stop()
         ctx.alarms.close()
         ctx.tracker.close()

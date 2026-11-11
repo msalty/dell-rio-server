@@ -39,7 +39,7 @@ struct http_async {
     int got, cap;
     char *buf;
     uint32_t deadline;
-    char req[320];
+    char req[448];
 };
 int http_async_start(struct http_async *h, const char *path, char *buf, int cap, int timeout_ms);
 /* The socket to wait on; *want_write is set while connecting/sending. */

@@ -641,8 +641,9 @@ function nowState() {
     return {
       // an offline receiver isn't playing, whatever it last reported
       t, playing: !!r && r.online && rxPlaying(st), remote: true, r, st,
+      lv: !t && r && r.online ? st.live || null : null, // an AirPlay or Spotify session
       shuffle: st.shuf === "1", repeat: st.rep || "off",
-      sub: t ? `${t.artist} — ${t.album}` : (r ? `${r.name} · ${!r.online ? "offline" : st.app ? `in use by ${st.app}` : "idle"}` : ""),
+      sub: t ? `${t.artist} — ${t.album}` : (r ? `${r.name} · ${!r.online ? "offline" : st.live ? liveText(st.live) : st.app ? `in use by ${st.app}` : "idle"}` : ""),
     };
   }
   const t = Player.current;
@@ -671,7 +672,8 @@ function renderWherePill(ns) {
   const r = ns.r;
   const self = RX.on && Player.target === RX.id;
   const name = self ? `This device · ${RX.name}` : r ? r.name : "Receiver";
-  const trouble = !r || !r.online ? "offline" : ns.st && ns.st.app ? `in use by ${ns.st.app}` : "";
+  const trouble = !r || !r.online ? "offline" : ns.st && ns.st.live ? liveText(ns.st.live, false)
+    : ns.st && ns.st.app ? `in use by ${ns.st.app}` : "";
   const label = trouble ? `${name} · ${trouble}` : name;
   if (pill.dataset.label === label) return;
   pill.dataset.label = label;
@@ -701,16 +703,18 @@ function renderNowPlaying() {
   document.body.classList.toggle("is-playing", !!playing);
   for (const el of document.querySelectorAll(".play-host")) el.classList.toggle("playing", !!playing);
   $("#btn-play").setAttribute("aria-label", playing ? "Pause" : "Play");
-  $("#np-title").textContent = t ? t.title : "Nothing playing";
-  $("#np-sub").textContent = t ? ns.sub : (ns.sub || "Pick something from your library");
+  const lv = ns.lv;
+  document.body.classList.toggle("is-live", !!lv);
+  $("#np-title").textContent = t ? t.title : lv ? liveTitle(lv) : "Nothing playing";
+  $("#np-sub").textContent = t ? ns.sub : lv ? liveSub(lv) : (ns.sub || "Pick something from your library");
   const msKey = !Player.target && t ? String(t.id) : "";
   if (Player._msKey !== msKey) { Player._msKey = msKey; updateMediaSession(t); }
   const art = $("#np-art");
-  const key = t ? `${t.album_id}` : "";
+  const key = t ? `${t.album_id}` : lv ? `live:${lv.art || liveTitle(lv)}` : "";
   if (art.dataset.key !== key) {
     art.dataset.key = key;
-    art.replaceChildren(t ? cover(t.album_id, t.album) : "");
-    tintFrom(document.documentElement, t ? albumArtUrl(t.album_id) : null);
+    art.replaceChildren(t ? cover(t.album_id, t.album) : lv ? liveCover(lv) : "");
+    tintFrom(document.documentElement, t ? albumArtUrl(t.album_id) : lv && lv.art ? lv.art : null);
   }
   renderModes();
   NowPlaying.render(ns);
@@ -726,6 +730,10 @@ function progressNow() {
       pos = Number(st.pos || 0);
       if (st.st === "play" && Player._statusAt && Player.receiver.online) pos += Date.now() - Player._statusAt;
       pos = Math.min(pos, dur);
+    } else if (st && st.live) {
+      // a live stream has no length: how long it has played
+      pos = Number(st.pos || 0);
+      if (st.st === "play" && Player._statusAt && Player.receiver.online) pos += Date.now() - Player._statusAt;
     }
   } else if (Player.current) {
     pos = (audio.currentTime || 0) * 1000;
@@ -1085,10 +1093,10 @@ const NowPlaying = {
           h("div", { class: "scrub" }, h("span", { class: "t-pos" }, "0:00"), seek, h("span", { class: "t-dur" }, "0:00")),
           h("div", { class: "buttons" },
             h("button", { class: "icon-btn mode-shuffle", "aria-label": "Shuffle", html: ICON.shuffle, onclick: toggleShuffle }),
-            h("button", { class: "icon-btn", "aria-label": "Previous", html: ICON.prev, onclick: () => Player.prev() }),
+            h("button", { class: "icon-btn skip", "aria-label": "Previous", html: ICON.prev, onclick: () => Player.prev() }),
             h("button", { class: "play-btn", "aria-label": "Play/pause", onclick: () => Player.toggle(),
               html: '<svg viewBox="0 0 24 24" class="i-play"><path d="M7 4.5v15l13-7.5z" class="fill"/></svg><svg viewBox="0 0 24 24" class="i-pause"><path d="M7 4h3.5v16H7zM13.5 4H17v16h-3.5z" class="fill"/></svg>' }),
-            h("button", { class: "icon-btn", "aria-label": "Next", html: ICON.next, onclick: () => Player.next() }),
+            h("button", { class: "icon-btn skip", "aria-label": "Next", html: ICON.next, onclick: () => Player.next() }),
             h("button", { class: "icon-btn mode-repeat", "aria-label": "Repeat", onclick: cycleRepeat,
               html: ICON.repeat + '<span class="badge-one" aria-hidden="true">1</span>' })),
           h("div", { class: "extras" }, icon("speaker"), vol)),
@@ -1130,26 +1138,31 @@ const NowPlaying = {
     const self = RX.on && Player.target === RX.id;
     this.where.textContent = self ? `This device · ${RX.name}` : Player.target ? `Playing on ${ns.r ? ns.r.name : "a receiver"}` : "Playing in this browser";
     this.where.classList.toggle("is-self", self);
-    const key = t ? String(t.album_id) : "";
+    const lv = ns.lv;
+    const key = t ? String(t.album_id) : lv ? `live:${lv.art || liveTitle(lv)}` : "";
     if (this.art.dataset.key !== key) {
       this.art.dataset.key = key;
-      this.art.replaceChildren(t ? cover(t.album_id, t.album) : cover(null, "RioServer"));
-      this.bg.style.backgroundImage = t ? `url("${albumArtUrl(t.album_id)}")` : "";
+      this.art.replaceChildren(t ? cover(t.album_id, t.album) : lv ? liveCover(lv) : cover(null, "RioServer"));
+      const bg = t ? albumArtUrl(t.album_id) : lv && lv.art ? lv.art : "";
+      this.bg.style.backgroundImage = bg ? `url("${bg}")` : "";
     }
     // Only when the song changes: rewriting the text would reset the ticker.
-    const tkey = t ? `${t.id}|${t.title}|${t.album}|${t.artist}` : `none|${ns.sub}`;
+    const tkey = t ? `${t.id}|${t.title}|${t.album}|${t.artist}`
+      : lv ? `live|${liveTitle(lv)}|${liveSub(lv)}` : `none|${ns.sub}`;
     if (this.tkey !== tkey) {
       this.tkey = tkey;
-      this.title.textContent = t ? t.title : "Nothing playing";
+      this.title.textContent = t ? t.title : lv ? liveTitle(lv) : "Nothing playing";
       this.sub.replaceChildren(...(t ? [
         t.podcast_id ? h("a", { href: `#/podcasts/${t.podcast_id}`, onclick: () => this.close() }, t.album)
           : h("a", { href: `#/albums/${t.album_id}`, onclick: () => this.close() }, t.album),
         " · ", t.artist,
-      ] : [ns.sub || "Pick something from your library"]));
+      ] : lv ? [liveSub(lv)] : [ns.sub || "Pick something from your library"]));
       this.title.title = this.title.textContent;
       for (const tk of this.tickers) tk.run();
     }
-    if (Player.target && Queue.remoteKey() !== this.qkey) this.renderQueue();
+    const liveKey = lv ? `${lv.app}|${lv.sender}` : "";
+    if (this.liveKey !== liveKey) { this.liveKey = liveKey; this.renderQueue(); }
+    else if (Player.target && Queue.remoteKey() !== this.qkey) this.renderQueue();
   },
   async renderQueue(force) {
     if (!this.built || this.el.hidden) return;
@@ -1161,6 +1174,15 @@ const NowPlaying = {
       return;
     }
     this.qkey = Queue.remoteKey();
+    const ns = nowState();
+    if (ns.lv) {
+      // An AirPlay or Spotify session has the receiver: its own queue waits.
+      this.qtools.replaceChildren();
+      this.qlist.replaceChildren();
+      this.qnote.textContent = `${liveText(ns.lv, false)} is playing on ${ns.r.name}. Stop ends it.` +
+        (ns.r.queue_saved ? " Then “Resume Up Next” on its card plays what was queued here before." : "");
+      return;
+    }
     const tracks = q.tracks || [];
     const idx = q.index;
     this.qtools.replaceChildren(...[
@@ -1276,6 +1298,7 @@ const RX = {
   cur: 0,
   track: null,     // what the active element plays
   pre: null,       // {track} loaded in the other element, to go on to
+  live: null,      // {url, info, tries}: an AirPlay or Spotify session's endless stream
   retry: 0,
   timer: null,
   wake: null,
@@ -1331,7 +1354,7 @@ const RX = {
     if (this.ws) { this.ws.onclose = null; this.ws.close(); }
     this.ws = null;
     for (const el of this.els) { el.pause(); el.removeAttribute("src"); el.load(); }
-    this.track = this.pre = null;
+    this.track = this.pre = this.live = null;
     if (this.wake) { this.wake.release().catch(() => {}); this.wake = null; }
     if (Player.target === this.id) setTarget("");
     this.id = "";
@@ -1362,13 +1385,15 @@ const RX = {
   },
   state() {
     const el = this.el;
+    if (this.live) return el.paused ? "pause" : el.readyState < 3 ? "buffer" : "play";
     if (!this.track || el.ended) return "stop";
     if (el.paused) return "pause";
     return el.readyState < 3 ? "buffer" : "play";
   },
   report() {
     this.send({ type: "status", st: this.state(), pos: Math.round((this.el.currentTime || 0) * 1000),
-      track_id: this.track ? this.track.id : null, vol: Math.round(this.el.volume * 100) });
+      track_id: this.track ? this.track.id : null, vol: Math.round(this.el.volume * 100),
+      live: this.live ? 1 : 0 });
   },
   play(el) {
     const p = el.play();
@@ -1387,7 +1412,18 @@ const RX = {
       setTarget(m.id);
       renderPill();
       pollReceivers();
+    } else if (m.type === "live") {
+      // An endless MP3 stream from the server: no length, no seeking.
+      this.pre = null;
+      this.other.pause();
+      this.track = null;
+      this.live = { url: m.url, info: m.info || {}, tries: 0 };
+      this.playLive();
+      this.setMeta();
+    } else if (m.type === "meta") {
+      if (this.live) { this.live.info = m.info || {}; this.setMeta(); }
     } else if (m.type === "load") {
+      this.live = null;
       this.pre = null;
       this.other.pause();
       this.track = m.track;
@@ -1407,8 +1443,10 @@ const RX = {
       this.play(el);
     } else if (m.type === "stop") {
       el.pause();
+      if (this.live) { el.removeAttribute("src"); el.load(); } // stop fetching the stream
       this.track = null;
       this.pre = null;
+      this.live = null;
     } else if (m.type === "seek") {
       el.currentTime = m.to;
     } else if (m.type === "volume") {
@@ -1416,8 +1454,27 @@ const RX = {
     }
     this.report();
   },
+  playLive() {
+    const el = this.el;
+    el.src = `${this.live.url}?t=${Date.now()}`; // a fresh connection, never a cached one
+    this.play(el);
+  },
+  // The live stream dropped: connect again a few times, then give up (the
+  // server then ends the session).
+  liveLost() {
+    const lv = this.live;
+    if (!lv) return;
+    if (lv.tries >= 3) {
+      this.live = null;
+      this.report();
+      return;
+    }
+    lv.tries++;
+    setTimeout(() => { if (this.live === lv) this.playLive(); }, 500 * 2 ** (lv.tries - 1));
+  },
   ended(el) {
     if (el !== this.el) return;
+    if (this.live) { this.liveLost(); return; }
     if (this.pre) {
       // Straight on to the track that's ready in the other element.
       this.cur = 1 - this.cur;
@@ -1432,6 +1489,7 @@ const RX = {
     }
   },
   failed(el) {
+    if (el === this.el && this.live) { if (el.getAttribute("src")) this.liveLost(); return; }
     if (el === this.el && this.track && el.getAttribute("src") && !el.src.startsWith("blob:")) {
       this.send({ type: "ended", track_id: this.track.id, failed: true });
     } else if (el === this.other) {
@@ -1439,7 +1497,16 @@ const RX = {
     }
   },
   setMeta() {
-    if (!("mediaSession" in navigator) || !this.track) return;
+    if (!("mediaSession" in navigator)) return;
+    if (this.live) {
+      const i = this.live.info;
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: i.title || i.label || "Live", artist: i.artist || "", album: i.album || "",
+        artwork: i.art ? [{ src: i.art, sizes: "512x512" }] : [],
+      });
+      return;
+    }
+    if (!this.track) return;
     const t = this.track;
     navigator.mediaSession.metadata = new MediaMetadata({
       title: t.title, artist: t.artist, album: t.album, artwork: [{ src: albumArtUrl(t.album_id), sizes: "512x512" }],
@@ -1459,7 +1526,7 @@ for (const el of RX.els) {
   el.addEventListener("error", () => RX.failed(el));
   for (const ev of ["play", "pause", "playing", "waiting", "seeked"]) el.addEventListener(ev, () => { if (el === RX.el) RX.report(); });
 }
-setInterval(() => { if (RX.on && RX.track && !RX.el.paused) RX.report(); }, 2000);
+setInterval(() => { if (RX.on && (RX.track || RX.live) && !RX.el.paused) RX.report(); }, 2000);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden || !RX.on) return;
   RX.keepAwake();
@@ -2176,11 +2243,27 @@ function receiverMeta(rx) {
   return `${rx.model} · ${rx.ip}`;
 }
 
+// An AirPlay or Spotify session playing on a receiver: "AirPlay from iPhone · Song – Artist".
+function liveText(live, withTrack = true) {
+  if (!live) return "";
+  const from = `${live.app}${live.sender ? ` from ${live.sender}` : ""}`;
+  const song = [live.title, live.artist].filter(Boolean).join(" – ");
+  return withTrack && song ? `${from} · ${song}` : from;
+}
+
+const liveTitle = (lv) => lv.title || liveText(lv, false);
+function liveSub(lv) {
+  const song = [lv.artist, lv.album].filter(Boolean).join(" — ");
+  return [song, `${liveText(lv, false)}${lv.paused ? " · Paused" : ""}`].filter(Boolean).join(" · ");
+}
+const liveCover = (lv) => cover(null, liveTitle(lv), null, lv.art || undefined);
+
 function receiverIdle(rx) {
   if (rx.kind === "rio" && rx.firmware === "stock") {
     return "Browsing with the original firmware. Switch to RioServer NG firmware for remote control.";
   }
   if (!rx.online) return `Last seen ${new Date(rx.last_seen * 1000).toLocaleString()}`;
+  if (rx.state && rx.state.live) return liveText(rx.state.live);
   return rx.state && rx.state.app ? `In use by ${rx.state.app}` : "Idle";
 }
 
@@ -2228,6 +2311,21 @@ function receiverCard(id) {
       .map(([v, label]) => h("option", { value: v }, label)));
   const sleepRow = h("div", { class: "sleep-row" }, h("span", { html: ICON.moon, style: "display:inline-flex;color:var(--muted)" }), sleep, sleepInfo);
   const ctrl = h("div", { class: "controls" }, transport, volRow, sleepRow);
+  // AirPlay and Spotify Connect speakers (NG receivers, when the server has them)
+  const speakerSwitch = (kind, label) => {
+    const input = h("input", { type: "checkbox", "aria-label": label, onchange: (e) =>
+      post(`/api/receivers/${id}/speakers`, { [kind]: e.target.checked })
+        .then(() => { toast(e.target.checked ? `${r().name} is now a ${label} speaker` : `${label} off for ${r().name}`); pollReceivers(); })
+        .catch((err) => { e.target.checked = !e.target.checked; fail(err); }) });
+    const row = h("label", { class: "speaker-row" }, h("span", { class: "switch" }, input, h("span")), h("span", {}, label));
+    return { input, row };
+  };
+  const airplaySw = speakerSwitch("airplay", "AirPlay");
+  const spotifySw = speakerSwitch("spotify", "Spotify Connect");
+  const speakerNote = h("div", { class: "meta" });
+  const speakerBox = h("div", { class: "speakers" }, airplaySw.row, spotifySw.row, speakerNote);
+  const resume = h("button", { class: "btn small", onclick: () => post(`/api/receivers/${id}/resume`)
+    .then(() => { toast("Resuming Up Next"); setTimeout(pollReceivers, 350); }).catch(fail) }, icon("play"), "Resume Up Next");
   const send = h("button", {
     class: "btn send",
     onclick: () => { setTarget(id); toast(`Music goes to ${r().name}`); },
@@ -2235,7 +2333,7 @@ function receiverCard(id) {
   const mine = h("span", { class: "tag" }, "This device");
   const forget = h("button", { class: "btn small", onclick: () => del(`/api/receivers/${id}`)
     .then(() => { receiverCards.delete(id); pollReceivers(); }).catch(fail) }, "Forget");
-  const el = h("div", { class: "card" }, h("h3", {}, dot, name, mine, rename), meta, now, ctrl, send, forget);
+  const el = h("div", { class: "card" }, h("h3", {}, dot, name, mine, rename), meta, now, ctrl, resume, send, speakerBox, forget);
   let playIcon = null, artKey = null;
   const thumb = h("div", { class: "thumb", title: "Open Now Playing", onclick: () => { setTarget(id); NowPlaying.open(); } });
   const info = h("div", { class: "info" });
@@ -2243,26 +2341,52 @@ function receiverCard(id) {
   function update(rx) {
     const st = rx.state || {};
     const t = st.track;
+    const lv = st.live;
     dot.className = `dot ${rx.online ? "on" : ""}`;
     name.textContent = rx.name;
     meta.textContent = receiverMeta(rx);
-    const key = t ? String(t.album_id) : "";
+    const key = t ? String(t.album_id) : lv ? `live:${lv.art || ""}` : "";
     if (artKey !== key) {
       artKey = key;
-      thumb.replaceChildren(t ? cover(t.album_id, t.album) : "");
-      tintFrom(now, t ? albumArtUrl(t.album_id) : null);
+      const art = t ? albumArtUrl(t.album_id) : lv && lv.art ? lv.art : null;
+      thumb.replaceChildren(t ? cover(t.album_id, t.album) : lv ? cover(null, lv.title || lv.app, null, lv.art || undefined) : "");
+      tintFrom(now, art);
     }
     info.replaceChildren(...(t
       ? [h("div", { class: "t" }, t.title), h("div", { class: "meta" }, `${t.artist} — ${t.album}`),
         h("div", { class: "meta" }, `${STATE_NAMES[st.st] || st.st} · ${fmtTime(st.pos)} / ${fmtTime(t.duration_ms)}${st.qn ? ` · track ${Number(st.qi) + 1} of ${st.qn}` : ""}`)]
-      : [h("div", { class: "meta" }, receiverIdle(rx))]));
+      : lv
+        ? [h("div", { class: "t" }, lv.title || liveText(lv, false)),
+          h("div", { class: "meta" }, [lv.artist, lv.album].filter(Boolean).join(" — ")),
+          h("div", { class: "meta" }, `${liveText(lv, false)}${lv.paused ? " · Paused" : ""}`)]
+        : [h("div", { class: "meta" }, receiverIdle(rx))]));
     if (!now.children.length) now.append(thumb, info);
-    thumb.hidden = !t;
+    thumb.hidden = !t && !lv;
     ctrl.hidden = !rx.controllable;
+    // While AirPlay or Spotify plays, only Stop and the volume work here.
+    for (const b of transport.querySelectorAll("button")) {
+      if (b !== moveBtn) b.hidden = !!lv && b.getAttribute("aria-label") !== "Stop";
+    }
+    resume.hidden = !rx.resumable || !rx.online;
+    const sp = rx.speakers;
+    const offered = sp && (sp.available.airplay || sp.available.spotify);
+    speakerBox.hidden = !offered;
+    if (offered) {
+      airplaySw.row.hidden = !sp.available.airplay;
+      spotifySw.row.hidden = !sp.available.spotify;
+      if (document.activeElement !== airplaySw.input) airplaySw.input.checked = sp.airplay;
+      if (document.activeElement !== spotifySw.input) spotifySw.input.checked = sp.spotify;
+      speakerNote.textContent = sp.needs_update && (sp.airplay || sp.spotify)
+        ? "Power-cycle this receiver to load firmware 1.8, which AirPlay and Spotify need."
+        : [rx.kind === "browser" && (sp.airplay || sp.spotify) ? "Only while the receiver page is open on that device." : "",
+          rx.kind === "cast" && sp.airplay ? "Plays a few seconds behind the phone." : "",
+          sp.spotify ? "Spotify Connect needs Spotify Premium." : ""].filter(Boolean).join(" ");
+    }
     volRow.hidden = rx.volume === false; // Safari on iPhone/iPad: only the device's buttons set it
     mine.hidden = rx.id !== RX.id;
     forget.hidden = !(rx.kind === "browser" && !rx.online);
     moveBtn.hidden = !t;
+    thumb.title = lv ? "" : "Open Now Playing";
     const left = rx.sleep_at ? Math.max(1, Math.round((rx.sleep_at * 1000 - Date.now()) / 60000)) : 0;
     sleepInfo.textContent = left ? `Stops in ${plural(left, "minute")}` : "";
     if (!left && document.activeElement !== sleep) sleep.value = "0";

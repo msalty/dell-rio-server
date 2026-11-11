@@ -176,6 +176,8 @@ Commands (`cmd <verb> <args…>`, tab-separated):
 | `vol <0-100>`, `seek <ms>` | volume, position |
 | `repeat <off\|all\|one>` | (1.6+) repeat mode |
 | `msg <text>` | show a message on the display |
+| `live <path> <label>` | (1.8+) play the endless MP3 stream at `<path>` (`/live/<id>`), from `<label>` (`AirPlay · Anna's iPhone`) |
+| `meta <label> <title> <artist> <album>` | (1.8+) what a live stream is playing now |
 
 When the web interface changes a queue (Play next, Add to Up Next, reorder,
 remove, jump), the server stores the new list as a `q:` node and sends
@@ -197,3 +199,33 @@ Nodes are paths that narrow step by step: `artists`, `ar:12`, `ar:12/al:40`,
 web interface. `podcasts` lists the podcasts and `pc:4` one podcast's
 downloaded episodes (picking an episode plays just that episode). `top25`
 and `played` are the Top 25 Most Played and Recently Played lists.
+
+### Live streams (firmware 1.8)
+
+AirPlay and Spotify Connect sessions (and, later, internet radio) reach a
+receiver as a live stream. The server receives the audio (shairport-sync or
+librespot), encodes it as constant-bitrate MP3 (160 kbps, 44.1 kHz stereo)
+and serves it at `GET /live/<id>`, where `<id>` is the receiver's MAC address
+without colons:
+
+- The response is `200` with `Content-Type: audio/mpeg`, no
+  `Content-Length`, and doesn't end until the session does. `Range` is
+  ignored. A new connection starts with the last 1.5 s of the stream, from
+  a frame header, and then gets the stream in real time by the server's
+  clock: a 0.4 s jitter buffer absorbs the sender's hiccups, silence fills in
+  when it has nothing (paused or late), and a sender that runs too far ahead
+  is trimmed, so a listener's buffer stays where it started. Each listener has its own buffer, and one that
+  falls 15 s behind is disconnected. Outside a session the URL answers `404`.
+- The server sends `cmd live /live/<id> <label>` to start, then `cmd meta`
+  whenever the title, artist, album or sender changes (a wake datagram goes
+  out with each, so it arrives at once). While several `meta` commands wait
+  for the receiver, only the newest is kept. The sender's volume arrives as
+  `cmd vol`. `cmd stop` ends it.
+- While it plays, the poll reports `live=1`, `id=0`, `qn=0` and `lbuf`, how
+  much of the stream the receiver holds (ms; -1 otherwise). If the
+  receiver reports `live=0` during a session (Stop, or music started from its
+  own menus), the server ends the session and disconnects the sender.
+- Firmware that reconnects after a drop asks for `/live/<id>` again from
+  scratch; after a few failures (or a `404`) it stops.
+
+Live audio isn't counted in the play history or Top 25.

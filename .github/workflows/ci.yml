@@ -12,7 +12,7 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi qemu-user ffmpeg zopfli
+          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi qemu-user ffmpeg lame zopfli
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -30,3 +30,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build image
         run: docker build -t rioserver-ng .
+      - name: Check the AirPlay and Spotify programs run in the image
+        run: docker run --rm rioserver-ng sh -c 'shairport-sync -V && librespot --version && lame --version | head -1'

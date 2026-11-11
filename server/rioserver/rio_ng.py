@@ -27,7 +27,9 @@ tab-separated records.
       Commands: play <node> <first> <shuffle>, queue <node> <index> <start>
       <shuffle> (1.6+: replace the queue, keep playing), pause, resume,
       toggle, stop, next, prev, vol <n>, seek <ms>, repeat <off|all|one>
-      (1.6+), msg <text>.
+      (1.6+), msg <text>, live <path> <label> and meta <label> <title>
+      <artist> <album> (1.8+: play an endless MP3 stream, such as an AirPlay
+      or Spotify session; the poll then reports live=1).
 
 The server keeps a copy of each receiver's queue (receivers.py): the track
 list it fetched with /ng/queue, followed through the qi/qn/id it reports.
@@ -391,6 +393,9 @@ class NGProtocol:
         if t:
             state["track"] = track_state(t)
         playing = f' during "{t["title"]}" ({t["bitrate"]} kbps)' if t else ""
+        speakers = getattr(self.ctx, "speakers", None)
+        if not t and speakers is not None:
+            playing = speakers.describe(r, _int(q, "lbuf"))
         under = max(0, _int(q, "under") or 0)
         under_ms = max(0, _int(q, "underms") or 0)
         if under or under_ms:
@@ -408,6 +413,8 @@ class NGProtocol:
         # Before the commands are collected, so a queue correction this
         # report calls for goes back in this reply.
         self.ctx.receivers.queue_reported(r, state)
+        if speakers is not None:
+            speakers.polled(r, q.get("live", ""))
         if self.tracker is not None:
             pos = _int(q, "pos") or 0
             self.tracker.report(r.key, r.name, state.get("track"), state.get("st") or "", pos)

@@ -62,6 +62,21 @@ class Config:
     # so the web interface can send music to them.
     cast: bool = True
 
+    # AirPlay (shairport-sync) and Spotify Connect (librespot) speakers for
+    # NG receivers. Nothing runs until they are switched on for a receiver
+    # in the web interface; these turn the feature off altogether.
+    airplay: bool = True
+    spotify: bool = True
+    # Each receiver's AirPlay speaker listens on TCP port base + 16 * n and
+    # UDP ports from base + 16 * n + 1 (ten of them); Spotify on base + n.
+    airplay_port_base: int = 5100
+    spotify_port_base: int = 5300
+    # Bitrate (kbps, constant) of the live MP3 stream the receivers play.
+    live_bitrate: int = 160
+    # The programs, if not the ones on PATH.
+    shairport_bin: str = "shairport-sync"
+    librespot_bin: str = "librespot"
+
     # Seconds between checks of podcast feeds for new episodes (0 = only
     # when asked to in the web interface).
     podcast_refresh: int = 3 * 3600
@@ -91,6 +106,13 @@ class Config:
         c.watch = _env_bool("RIO_WATCH", c.watch)
         c.watch_polling = _env_bool("RIO_WATCH_POLLING", c.watch_polling)
         c.cast = _env_bool("RIO_CAST", c.cast)
+        c.airplay = _env_bool("RIO_AIRPLAY", c.airplay)
+        c.spotify = _env_bool("RIO_SPOTIFY", c.spotify)
+        c.airplay_port_base = _env_int("RIO_AIRPLAY_PORT_BASE", c.airplay_port_base)
+        c.spotify_port_base = _env_int("RIO_SPOTIFY_PORT_BASE", c.spotify_port_base)
+        c.live_bitrate = _env_int("RIO_LIVE_BITRATE", c.live_bitrate)
+        c.shairport_bin = os.environ.get("RIO_SHAIRPORT_SYNC", c.shairport_bin)
+        c.librespot_bin = os.environ.get("RIO_LIBRESPOT", c.librespot_bin)
         c.podcast_refresh = _env_int("RIO_PODCAST_REFRESH", c.podcast_refresh)
         c.classic_show_counts = _env_bool("RIO_CLASSIC_SHOW_COUNTS", c.classic_show_counts)
         c.log_level = os.environ.get("RIO_LOG_LEVEL", c.log_level).upper()

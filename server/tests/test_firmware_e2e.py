@@ -35,11 +35,11 @@ def free_port(kind=socket.SOCK_STREAM) -> int:
 
 
 @contextlib.contextmanager
-def run_server(music_dir, data_dir):
+def run_server(music_dir, data_dir, extra_env=None):
     http = free_port()
     env = dict(os.environ, RIO_MUSIC_DIR=str(music_dir), RIO_DATA_DIR=str(data_dir),
                RIO_HTTP_PORT=str(http), RIO_WEB_PORT="0", RIO_ENABLE_BOOT="0",
-               RIO_SSDP_PORT=str(free_port(socket.SOCK_DGRAM)), RIO_WATCH="0")
+               RIO_SSDP_PORT=str(free_port(socket.SOCK_DGRAM)), RIO_WATCH="0", **(extra_env or {}))
     proc = subprocess.Popen([sys.executable, "-m", "rioserver"], cwd=ROOT / "server", env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     deadline = time.time() + 15
@@ -579,8 +579,175 @@ def test_music_from_the_web_wakes_a_receiver_in_standby(server, tmp_path):
             time.sleep(0.2)
         st = api("/api/receivers")[0]["state"]
         assert st["st"] in ("play", "buffer"), st
-        assert st["ver"] == "1.7"
+        assert st["ver"] == "1.8"
         time.sleep(0.5)
         assert lit_pixels(rx.pixels()) > 300, rx.console()  # awake, showing Now Playing
     finally:
         rx.stop()
+
+
+@contextlib.contextmanager
+def cutting_proxy(upstream: str):
+    """An HTTP/1.0 proxy whose live-stream connections can be cut, as a
+    network hiccup would."""
+    host, port = upstream.split(":")
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(16)
+    live: list[socket.socket] = []
+
+    def handle(client):
+        with client:
+            head = b""
+            while b"\r\n\r\n" not in head:
+                chunk = client.recv(4096)
+                if not chunk:
+                    return
+                head += chunk
+            if head.startswith(b"GET /live/"):
+                live.append(client)
+            try:
+                up = socket.create_connection((host, int(port)))
+            except OSError:
+                return
+            with up:
+                up.sendall(head)
+                try:
+                    while chunk := up.recv(65536):
+                        client.sendall(chunk)
+                except OSError:
+                    return
+
+    def serve():
+        while True:
+            try:
+                client, _ = listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=handle, args=(client,), daemon=True).start()
+
+    def cut():
+        while live:
+            s = live.pop()
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    threading.Thread(target=serve, daemon=True).start()
+    try:
+        yield f"127.0.0.1:{listener.getsockname()[1]}", cut
+    finally:
+        listener.close()
+
+
+def fake_speakers(tmp_path) -> tuple[Path, dict]:
+    """Fake shairport-sync and librespot (tests/fake_speaker.py) for the server."""
+    fakes = tmp_path / "fakes"
+    fakes.mkdir()
+    fake = Path(__file__).with_name("fake_speaker.py")
+    env = {"FAKE_SPEAKER_DIR": str(fakes)}
+    for kind, var in (("shairport", "RIO_SHAIRPORT_SYNC"), ("librespot", "RIO_LIBRESPOT")):
+        p = tmp_path / f"fake-{kind}"
+        p.write_text(f"#!/bin/sh\nexec '{sys.executable}' '{fake}' {kind} \"$@\"\n")
+        p.chmod(0o755)
+        env[var] = str(p)
+    return fakes, env
+
+
+def control(fakes: Path, instance: str, **cmd) -> None:
+    import json
+
+    ctl = fakes / f"{instance}.ctl"
+    deadline = time.time() + 10
+    while not ctl.exists() and time.time() < deadline:
+        time.sleep(0.1)
+    fd = os.open(ctl, os.O_WRONLY | os.O_NONBLOCK)
+    os.write(fd, (json.dumps(cmd) + "\n").encode())
+    os.close(fd)
+
+
+def wait_until(fn, timeout=10.0, step=0.2):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if fn():
+            return True
+        time.sleep(step)
+    return fn()
+
+
+@pytest.mark.skipif(not shutil.which("lame") and not shutil.which("ffmpeg"), reason="needs lame or ffmpeg")
+def test_airplay_plays_live_on_the_receiver(music_dir, tmp_path):
+    """An AirPlay session (from a fake shairport-sync) plays on the receiver
+    as a live stream: well past its buffer, with the title on the display,
+    through a dropped connection, and until Stop or the phone ends it."""
+    import json
+    import urllib.request
+
+    from simulate import Receiver
+
+    def api(base, path, body=None):
+        req = urllib.request.Request(f"http://{base}{path}", data=json.dumps(body).encode() if body else None,
+                                     headers={"Content-Type": "application/json"})
+        return json.load(urllib.request.urlopen(req))
+
+    def starts(instance):
+        log = fakes / f"{instance}.log"
+        return log.read_text().count("start ") if log.exists() else 0
+
+    fakes, env = fake_speakers(tmp_path)
+    with run_server(music_dir, tmp_path / "data", env) as upstream, cutting_proxy(upstream) as (proxied, cut):
+        rx = Receiver(str(FIRMWARE), proxied, workdir=str(tmp_path / "rx"))
+        try:
+            assert wait_until(lambda: api(upstream, "/api/receivers"))
+            rid = api(upstream, "/api/receivers")[0]["id"]
+            assert wait_until(lambda: api(upstream, "/api/receivers")[0]["state"].get("ver") == "1.8")
+            api(upstream, f"/api/receivers/{rid}/speakers", {"airplay": True})
+            control(fakes, "airplay-0", play=120, title="Live Song", artist="Live Artist", album="Live Album",
+                    sender="Test Phone")
+            assert wait_until(lambda: "playing live /live/" in rx.console()), rx.console()
+            assert wait_until(lambda: 'live now "Live Song" by "Live Artist"' in rx.console()), rx.console()
+
+            # well past its start-up buffer (16 KB, under a second)
+            time.sleep(1)
+            before = rx.audio_bytes()
+            time.sleep(6)
+            played = (rx.audio_bytes() - before) / 176400
+            assert played > 4.5, f"{played:.1f} s of audio in 6 s\n{rx.console()}"
+            assert "ran out of data" not in rx.console()
+            assert lit_pixels(rx.pixels()) > 300  # Now Playing with the title
+            r = api(upstream, "/api/receivers")[0]
+            assert r["state"]["app"] == "AirPlay" and r["state"]["live"]["title"] == "Live Song"
+
+            # the phone's audio stalls for a second: silence fills in upstream,
+            # so the receiver doesn't run out of data
+            control(fakes, "airplay-0", stall=1.0)
+            time.sleep(4)
+            assert "ran out of data" not in rx.console(), rx.console()
+
+            # the connection drops: it reconnects and plays on
+            cut()
+            assert wait_until(lambda: "reconnecting" in rx.console()), rx.console()
+            time.sleep(1)
+            before = rx.audio_bytes()
+            time.sleep(4)
+            assert rx.audio_bytes() - before > 2.5 * 176400, rx.console()
+            assert "live stream lost" not in rx.console()
+
+            # Stop on the receiver ends the session (and disconnects the phone)
+            rx.press("stop")
+            assert wait_until(lambda: "live" not in api(upstream, "/api/receivers")[0]["state"]), rx.console()
+            assert wait_until(lambda: starts("airplay-0") == 2)
+            assert api(upstream, "/api/receivers")[0]["state"]["st"] == "stop"
+
+            # a new session, ended by the phone: the receiver stops
+            control(fakes, "airplay-0", play=120, title="Second Song", artist="Live Artist")
+            assert wait_until(lambda: rx.console().count("playing live /live/") == 2), rx.console()
+            control(fakes, "airplay-0", stop=True)
+            assert wait_until(lambda: api(upstream, "/api/receivers")[0]["state"]["st"] == "stop"), rx.console()
+            assert "live" not in api(upstream, "/api/receivers")[0]["state"]
+            before = rx.audio_bytes()
+            time.sleep(1.5)
+            assert rx.audio_bytes() - before < 0.5 * 176400  # it really stopped
+        finally:
+            rx.stop()

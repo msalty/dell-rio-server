@@ -9,6 +9,10 @@ server and reports its progress back. While a track plays, the next one is
 added to the device's own queue with a preload time, so it goes straight on
 without a gap; QueuePlayer follows along (and starts the next track itself
 if the device doesn't).
+
+A cast device can also be an AirPlay or Spotify Connect speaker
+(speakers.py): the session is handed to it as a LIVE stream of /live/<id>,
+which it fetches from this server like any track.
 """
 
 from __future__ import annotations
@@ -73,6 +77,9 @@ class CastPlayer(players.QueuePlayer):
         self._ended_session = None
         self._launched_at = float("-inf")
         self._base = ""
+        self._live_url = ""  # the live stream it was handed (AirPlay, Spotify)
+        # Told whether each media status is of that stream (speakers.py).
+        self.live_report = None
 
     @property
     def base(self) -> str:
@@ -125,7 +132,42 @@ class CastPlayer(players.QueuePlayer):
         return {"contentId": f"{base}/api/stream/{track['id']}", "streamType": "BUFFERED",
                 "contentType": "audio/mpeg", "metadata": track_metadata(track, base)}
 
+    # -- live streams (AirPlay, Spotify; see speakers.py) ---------------------
+    def play_live(self, path: str, info: dict) -> None:
+        with self._lock:
+            self._preloaded = self._preload_for = None
+            self._set_state("buffer", 0)
+            self._live_url = f"{self.base}{path}"
+        self._submit(self._load_live, self._live_url, info)
+
+    def live_meta(self, info: dict) -> None:
+        """The Default Media Receiver can't change what it shows without
+        loading the stream again (a gap in the sound), so a cast device keeps
+        the details the session started with."""
+
+    def _live_metadata(self, info: dict) -> dict:
+        art = info.get("art") or ""
+        if art.startswith("/"):
+            art = f"{self.base}{art}"
+        meta = {"metadataType": 3, "title": info.get("title") or info.get("label") or "Live",
+                "artist": info.get("artist") or info.get("label") or "", "albumName": info.get("album") or ""}
+        if art:
+            meta["images"] = [{"url": art}]
+        return meta
+
+    def _load_live(self, url: str, info: dict) -> None:
+        if self._live_url != url:
+            return  # a newer load or the end came first
+        self._wait_connected()
+        self._launched_at = time.monotonic()
+        self._dmr.play_media(url, "audio/mpeg", stream_type="LIVE", metadata=self._live_metadata(info))
+
+    def _report_live(self, live: bool) -> None:
+        if self.live_report is not None:
+            self.live_report(live)
+
     def _device_load(self, track: dict, start_seconds: float = 0.0) -> None:
+        self._live_url = ""
         self._wait_connected()
         base = self.base
         self._launched_at = time.monotonic()
@@ -156,6 +198,7 @@ class CastPlayer(players.QueuePlayer):
         self.cc.media_controller.play()
 
     def _device_stop(self) -> None:
+        self._live_url = ""
         self._wait_connected()
         if self.cc.app_id == APP_MEDIA_RECEIVER:
             self.cc.media_controller.stop()
@@ -174,17 +217,34 @@ class CastPlayer(players.QueuePlayer):
         app = status.app_id
         if app in (None, APP_BACKDROP):
             self._on_other_app("")
+            if self._live_url and time.monotonic() - self._launched_at > LAUNCH_GRACE:
+                self._report_live(False)  # the device stopped the stream (its own buttons, say)
         elif app != APP_MEDIA_RECEIVER and time.monotonic() - self._launched_at > LAUNCH_GRACE:
             self._on_other_app(status.display_name or "another app")
+            if self._live_url:
+                self._report_live(False)
 
     def new_media_status(self, status) -> None:
         base = self.base
+        live = self._live_url
+        if live and status.content_id == live:
+            st = STATES.get(status.player_state)
+            if st in ("play", "buffer", "pause"):
+                self._set_state(st, (status.adjusted_current_time or 0) * 1000)
+                self.last_seen = time.time()
+                self._report_live(True)
+            elif st == "stop" and time.monotonic() - self._launched_at > 2:
+                self._set_state("stop", 0)
+                self._report_live(False)  # it stopped, or gave up on the stream
+            return
         tid = _track_id(status.content_id, base)
         if tid is None:
             if status.content_id and status.player_state != "IDLE" \
                     and time.monotonic() - self._launched_at > LAUNCH_GRACE:
                 # Something else was cast through the Default Media Receiver.
                 self._on_other_app(status.title or "another app")
+                if live:
+                    self._report_live(False)
             return
         st = STATES.get(status.player_state)
         if st is None:
@@ -217,27 +277,20 @@ class CastPlayer(players.QueuePlayer):
 class CastDiscovery:
     """Finds cast devices on the network and adds them to the registry."""
 
-    def __init__(self, cfg, registry, loop):
+    def __init__(self, cfg, registry, loop, shared=None):
+        from .mdns import SharedZeroconf
+
         self.cfg = cfg
         self.registry = registry
         self.loop = loop
+        self.shared = shared or SharedZeroconf()
         self.browser = None
         self.zconf = None
 
     def start(self) -> None:
-        import zeroconf
         from pychromecast.discovery import CastBrowser, SimpleCastListener
 
-        # Zeroconf created on the event loop's thread would run on that loop
-        # and refuse the blocking calls pychromecast makes; created anywhere
-        # else, it runs its own loop on its own thread.
-        made: list = []
-        t = threading.Thread(target=lambda: made.append(zeroconf.Zeroconf()), daemon=True)
-        t.start()
-        t.join()
-        if not made:
-            raise OSError("zeroconf failed to start")
-        self.zconf = made[0]
+        self.zconf = self.shared.get()
         listener = SimpleCastListener(self._found, self._lost, self._found)
         self.browser = CastBrowser(listener, self.zconf)
         self.browser.start_discovery()

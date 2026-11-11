@@ -5,6 +5,10 @@ to /api/player/ws and from then on is a player like a Chromecast: the server
 keeps its queue (players.QueuePlayer) and tells it what to play, and it
 reports back what it is doing.
 
+It can also be an AirPlay or Spotify Connect speaker (speakers.py): the
+session reaches it as a "live" message, an endless MP3 stream to play
+without seeking, and "meta" messages say what is on it; "stop" ends it.
+
 Server -> browser (JSON):
     {"type": "welcome", "id": "<player id>"}
     {"type": "load", "url": ..., "track": {...}, "start": <seconds>}
@@ -12,9 +16,12 @@ Server -> browser (JSON):
     {"type": "pause" | "resume" | "stop"}
     {"type": "seek", "to": <seconds>}
     {"type": "volume", "level": <0..1>}
+    {"type": "live", "url": ..., "info": {...}}   an endless MP3 stream (AirPlay, Spotify)
+    {"type": "meta", "info": {"label", "title", "artist", "album", "art"}}   what it plays now
 Browser -> server:
     {"type": "hello", "name": "Living Room", "volume": true|false}
-    {"type": "status", "st": "play"|"pause"|"buffer"|"stop", "pos": <ms>, "track_id": <id>, "vol": <0..100>}
+    {"type": "status", "st": "play"|"pause"|"buffer"|"stop", "pos": <ms>, "track_id": <id>, "vol": <0..100>,
+     "live": 1 while it plays a live stream}
     {"type": "ended", "track_id": <id>, "failed": false}
 
 "volume" in the hello says whether the page can set its volume at all:
@@ -27,6 +34,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 
 from . import players
 
@@ -66,6 +74,8 @@ class BrowserPlayer(players.QueuePlayer):
         # dropped it): resuming loads the track again where it was.
         self._device_empty = False
         self._was_playing = False
+        # Told whether each status report is of a live stream (speakers.py).
+        self.live_report = None
 
     def to_json(self) -> dict:
         d = super().to_json()
@@ -99,6 +109,17 @@ class BrowserPlayer(players.QueuePlayer):
         if kind == "status":
             st = msg.get("st")
             if st not in ("play", "pause", "buffer", "stop"):
+                return
+            live = bool(msg.get("live"))
+            if live:
+                try:
+                    self._set_state(st, max(0.0, float(msg.get("pos") or 0)))
+                except (TypeError, ValueError):
+                    pass
+                self.last_seen = time.time()
+            if self.live_report is not None:
+                self.live_report(live)
+            if live:
                 return
             if track_id is None:
                 self._nothing_loaded()
@@ -168,6 +189,20 @@ class BrowserPlayer(players.QueuePlayer):
 
     def _device_seek(self, seconds: float) -> None:
         self._send({"type": "seek", "to": round(seconds, 3)})
+
+    # -- live streams (AirPlay, Spotify; see speakers.py) ---------------------
+    def play_live(self, path: str, info: dict) -> None:
+        with self._lock:
+            self._preloaded = self._preload_for = None
+            self._set_state("buffer", 0)
+        self._submit(self._send, {"type": "live", "url": path, "info": info})
+
+    def live_meta(self, info: dict) -> None:
+        self._submit(self._send, {"type": "meta", "info": info})
+
+    def stop_live(self) -> None:
+        self._set_state("stop", 0)
+        self._submit(self._send, {"type": "stop"})
 
     def _device_volume(self, level: float) -> None:
         if self.volume_supported:
