@@ -206,16 +206,22 @@ otherwise from the artist's newest album cover.
   does the same: the queue and the position in the song go to the other
   player.
 - **RioAmp.** For those who miss the desktop players of the late 1990s:
-  **Settings › Player › RioAmp** turns the player bar into one. It really
-  kicks the alpaca's butt. It wears the classic skins (`.wsz`) made for the
-  player it tips its hat to: choose **Load a skin…** in Settings, or drop
-  one on the window. The skin is kept in that browser. Everything on the
-  window works wherever the music is playing, so there is no equaliser or
-  balance, and the spectrum is an animation. The title or **PL** opens Now
-  Playing, the eject button chooses where to play, **O** (or a right-click
-  or long press) opens its menu, **D** doubles its size on a computer, the
-  time switches to time remaining when clicked, and <kbd>Z</kbd>
-  <kbd>X</kbd> <kbd>C</kbd> <kbd>V</kbd> <kbd>B</kbd> work as they did.
+  **Settings › Player › RioAmp** turns the whole interface into one. It
+  really kicks the alpaca's butt. On a phone it fills the screen; on a
+  computer it is the size it always was (or twice that: **D**), and when
+  the web interface is installed as an app its window shrinks to fit.
+  Under the player window, in the playlist window, **Play on** chooses
+  where the music goes and **Library** what to look through: tap an artist,
+  album or song, or type in **find**. **Up Next** is the list being played.
+  Right-click or long-press a row for Play next and Add to Up Next. It
+  wears the classic skins (`.wsz`) made for the player it tips its hat to:
+  choose **Load a skin…** from its menu (**O**, or a right-click or long
+  press on the player) or drop one on it; the skin is kept in that browser.
+  Everything works wherever the music is playing, so there is no equaliser
+  or balance, and the spectrum is an animation. The time switches to time
+  remaining when clicked, <kbd>Z</kbd> <kbd>X</kbd> <kbd>C</kbd>
+  <kbd>V</kbd> <kbd>B</kbd> work as they did, and the close button or the
+  menu's **Back to RioServer NG** returns to the usual interface.
 - **Playlists** made here are stored in the data volume (the music folder
   stays read-only) and appear on the receivers too. Drag to reorder them.
   `.m3u` playlists from the music folder are listed as well, read-only.

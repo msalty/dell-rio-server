@@ -1,17 +1,22 @@
-// RioAmp: the player bar as a 1990s desktop player. It really kicks the
-// alpaca's butt.
+// RioAmp: RioServer as a 1990s desktop player. It really kicks the alpaca's
+// butt.
 //
-// The window is the classic 275x116 one, drawn from a skin's sprite sheets
-// exactly where the classic layout puts them, so the .wsz skins made for the
-// player that inspired it work here. A skin is a zip of bitmaps; one is read
-// in this file (the browser decodes the bitmaps), kept in this browser, and
-// anything it leaves out comes from the built-in skin, which is drawn by
-// code below in RioServer's own colours.
+// While it is on it is the whole interface. On top is the classic 275x116
+// player window, drawn from a skin's sprite sheets exactly where the classic
+// layout puts them, so the .wsz skins made for the player that inspired it
+// work here. Under it, in the classic playlist window's frame, is everything
+// else: where the music goes, the library, and Up Next. On a phone the two
+// fill the screen; on a computer they are life-size or twice that, and an
+// installed app's window shrinks to fit around them.
 //
-// Everything on the window works wherever the music is playing (this
-// browser, a receiver or a speaker): it only uses what the ordinary player
-// bar uses. That is why there is no equaliser and no balance, and why the
-// spectrum is an animation and not a measurement.
+// A skin is a zip of bitmaps; one is read in this file (the browser decodes
+// the bitmaps), kept in this browser, and anything it leaves out comes from
+// the built-in skin, which is drawn by code below in RioServer's colours.
+//
+// Everything works wherever the music is playing (this browser, a receiver
+// or a speaker): it only uses what the standard player uses. That is why
+// there is no equaliser and no balance, and why the spectrum is an animation
+// and not a measurement.
 //
 // Loaded by app.js only when RioAmp is switched on in Settings.
 "use strict";
@@ -19,7 +24,7 @@
 window.RioAmp = (() => {
   const W = 275, H = 116;
   const SHEETS = ["main", "titlebar", "cbuttons", "numbers", "nums_ex", "text", "posbar", "volume", "balance",
-    "shufrep", "playpaus", "monoster"];
+    "shufrep", "playpaus", "monoster", "pledit"];
 
   // ------------------------------------------------------------ reading a skin (.wsz is a zip)
 
@@ -183,7 +188,7 @@ window.RioAmp = (() => {
         : "That isn't a classic skin (no main.bmp in it)");
     }
     const base = builtinSkin();
-    const skin = { name, sheets: {}, vis: base.vis };
+    const skin = { name, sheets: {}, vis: base.vis, list: { ...base.list } };
     for (const s of SHEETS) {
       let img = null;
       for (const [ext, type] of [["bmp", "image/bmp"], ["png", "image/png"]]) {
@@ -207,6 +212,17 @@ window.RioAmp = (() => {
           .map((l) => l.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/)).filter(Boolean)
           .map((m) => `rgb(${m[1]},${m[2]},${m[3]})`);
         if (rows.length >= 24) skin.vis = rows.slice(0, 24);
+      } catch { /* the built-in colours */ }
+    }
+    // the list window's colours
+    const pl = files.get("pledit.txt");
+    if (pl) {
+      try {
+        const txt = new TextDecoder("latin1").decode(pl());
+        for (const [key, name] of [["normal", "Normal"], ["current", "Current"], ["bg", "NormalBG"], ["sel", "SelectedBG"]]) {
+          const m = txt.match(new RegExp(`^\\s*${name}\\s*=\\s*#?([0-9a-f]{6})`, "im"));
+          if (m) skin.list[key] = `#${m[1]}`;
+        }
       } catch { /* the built-in colours */ }
     }
     return finishSkin(skin);
@@ -479,6 +495,62 @@ window.RioAmp = (() => {
       sheets.text = c;
     }
 
+    // The list window's frame, as the classic playlist window has it: title
+    // bar (focused, then not), sides, scroll handle and bottom bar.
+    {
+      const [c, g] = make(280, 186, "#000");
+      const cross = [[2, 2], [6, 2], [3, 3], [5, 3], [4, 4], [3, 5], [5, 5], [2, 6], [6, 6]];
+      for (const [y, ink, line] of [[0, C.ink, C.dim], [21, C.label, C.off]]) {
+        for (const [x, w] of [[0, 25], [26, 100], [127, 25], [153, 25]]) {
+          rect(g, x, y, w, 20, "#222e35");
+          rect(g, x, y, w, 1, C.edge);
+          rect(g, x, y + 1, w, 1, C.hi);
+          rect(g, x, y + 19, w, 1, C.lo);
+        }
+        rect(g, 0, y, 1, 20, C.edge); rect(g, 1, y + 1, 1, 19, C.hi);
+        rect(g, 177, y, 1, 20, C.edge); rect(g, 176, y + 1, 1, 19, C.lo);
+        word(g, "playlist", 56, y + 8, ink);
+        for (const ly of [8, 10, 12]) {
+          rect(g, 8, y + ly, 17, 1, line);
+          rect(g, 26, y + ly, 25, 1, line); rect(g, 101, y + ly, 25, 1, line);
+          rect(g, 127, y + ly, 25, 1, line);
+          rect(g, 153, y + ly, 10, 1, line);
+        }
+        raised(g, 167, y + 5, 9, 9, "#26333a");
+        for (const [cx, cy] of cross) rect(g, 167 + cx, y + 5 + cy, 1, 1, C.label);
+      }
+      rect(g, 0, 42, 12, 29, C.face); rect(g, 0, 42, 1, 29, C.edge); rect(g, 1, 42, 1, 29, C.hi); rect(g, 11, 42, 1, 29, C.lo);
+      rect(g, 31, 42, 20, 29, C.face); rect(g, 31, 42, 1, 29, C.hi); rect(g, 49, 42, 1, 29, C.lo); rect(g, 50, 42, 1, 29, C.edge);
+      rect(g, 37, 42, 10, 29, C.lcd); rect(g, 37, 42, 1, 29, C.lo); rect(g, 46, 42, 1, 29, C.hi);
+      for (const [x, down] of [[52, false], [61, true]]) {
+        raised(g, x, 53, 8, 18, down ? "#141b1f" : "#2c3b43", down ? C.lo : C.hi, down ? C.hi : C.lo);
+        rect(g, x + 2, 60, 4, 1, C.ink); rect(g, x + 2, 62, 4, 1, C.ink);
+      }
+      const floor = (x, y, w) => {
+        rect(g, x, y, w, 38, C.face); rect(g, x, y, w, 1, C.hi); rect(g, x, y + 36, w, 1, C.lo); rect(g, x, y + 37, w, 1, C.edge);
+      };
+      floor(179, 0, 25); floor(0, 72, 125); floor(126, 72, 150);
+      rect(g, 0, 72, 1, 38, C.edge); rect(g, 1, 73, 1, 36, C.hi);
+      rect(g, 275, 72, 1, 38, C.edge); rect(g, 274, 73, 1, 36, C.lo);
+      const key = (x, label) => {
+        raised(g, x, 80, 22, 18, "#26333a");
+        word(g, label, x + (label.length > 3 ? 2 : 4), 86, C.label);
+      };
+      key(14, "add"); key(43, "rem"); key(72, "sel"); key(101, "misc"); key(232, "list");
+      sunk(g, 130, 80, 96, 10);
+      sunk(g, 189, 93, 29, 10);
+      // the little transport: previous, play, pause, stop, next, open
+      const tip = (x, y, dir) => { for (let i = 0; i < 4; i++) rect(g, dir > 0 ? x + i : x + 3 - i, y + i, 1, 7 - 2 * i, C.label); };
+      rect(g, 130, 95, 1, 7, C.label); tip(131, 95, -1);
+      tip(139, 95, 1);
+      rect(g, 148, 95, 2, 7, C.label); rect(g, 151, 95, 2, 7, C.label);
+      rect(g, 157, 95, 6, 6, C.label);
+      tip(166, 95, 1); rect(g, 170, 95, 1, 7, C.label);
+      for (let i = 0; i < 4; i++) rect(g, 177 - i, 95 + i, 1 + 2 * i, 1, C.label);
+      rect(g, 174, 100, 7, 2, C.label);
+      sheets.pledit = c;
+    }
+
     const blend = (a, b, t) => `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * t)).join(",")})`;
     const vis = [C.lcd, "#0d1619"];
     for (let i = 0; i < 16; i++) {
@@ -486,7 +558,8 @@ window.RioAmp = (() => {
     }
     for (let i = 0; i < 5; i++) vis.push(C.ink);
     vis.push(C.white);
-    builtin = finishSkin({ name: "", sheets, vis });
+    const list = { normal: "#4fd1b5", current: "#e8fff9", bg: C.lcd, sel: "#12443b" };
+    builtin = finishSkin({ name: "", sheets, vis, list });
     return builtin;
   }
 
@@ -515,34 +588,41 @@ window.RioAmp = (() => {
     }
   }
 
-  // ------------------------------------------------------------ the window
+  // ------------------------------------------------------------ the windows
 
+  const LIST_H = 290; // the list window's height on a desk, in skin pixels
+  const CATS = [["queue", "Up Next"], ["genres", "Genres"], ["artists", "Artists"], ["playlists", "Playlists"],
+    ["albums", "Albums"], ["podcasts", "Podcasts"], ["songs", "Songs"], ["recent", "Recent"]];
   const state = {
-    on: false, skin: null, el: null, base: null, scale: 1,
-    press: null,        // {id, inside}: the button under a held pointer
-    drag: null,         // {id: "vol" | "pos", v}: a handle being moved, v from 0 to 1
-    hold: null,         // {v, until}: where a seek went, until the player reports it
+    on: false, skin: null, desk: null, room: null, stack: null,
+    el: null, base: null, // the main window on screen, and its 275x116 picture
+    list: null,           // the list window's parts
+    scale: 1,
+    press: null,          // {id, inside}: the button under a held pointer
+    drag: null,           // {id: "vol" | "pos", v}: a handle being moved, v from 0 to 1
+    hold: null,           // {v, until}: where a seek went, until the player reports it
     remaining: store("rio.rioamp.remaining") === "1",
-    double: store("rio.rioamp.double") === "1",
-    title: "", scroll: 0, scrollAt: 0,
+    double: store("rio.rioamp.double") !== "0",
+    listShown: store("rio.rioamp.list") !== "0",
+    nav: [], rows: [], loadSeq: 0, queueKey: "", queueMs: 0, targetKey: "", menuRow: null,
+    title: "", scroll: 0, scrollAt: 0, overlay: null,
     bars: new Float32Array(19), peaks: new Float32Array(19), visAt: 0,
-    timer: null,
+    timer: null, was: null,
   };
 
-  // Where things are: [x, y, w, h] in the window.
+  // Where things are in the main window: [x, y, w, h].
   const AT = {
-    menu: [6, 3, 9, 9], min: [244, 3, 9, 9], shade: [254, 3, 9, 9], close: [264, 3, 9, 9],
+    menu: [6, 3, 9, 9], close: [264, 3, 9, 9],
     prev: [16, 88, 23, 18], play: [39, 88, 23, 18], pause: [62, 88, 23, 18], stop: [85, 88, 23, 18],
     next: [108, 88, 22, 18], eject: [136, 89, 22, 16],
-    shuffle: [164, 89, 47, 15], repeat: [210, 89, 28, 15], eq: [219, 58, 23, 12], pl: [242, 58, 23, 12],
+    shuffle: [164, 89, 47, 15], repeat: [210, 89, 28, 15], pl: [242, 58, 23, 12],
     vol: [107, 57, 68, 13], pos: [16, 72, 248, 10],
-    time: [36, 26, 63, 13], title: [109, 23, 159, 14], vis: [24, 43, 76, 16],
-    clutO: [10, 24, 8, 8], clutI: [10, 40, 8, 8], clutD: [10, 48, 8, 8], logo: [253, 91, 13, 15],
+    time: [36, 26, 63, 13], vis: [24, 43, 76, 16],
+    clutO: [10, 24, 8, 8], clutD: [10, 48, 8, 8], logo: [253, 91, 13, 15],
   };
-  // Small targets get a little more room around them for fingers.
-  const ROOMY = { menu: 3, close: 3, clutO: 0, clutI: 0, clutD: 0 };
+  const ROOMY = { menu: 3, close: 3 }; // small targets get more room for fingers
   const ORDER = ["menu", "close", "prev", "play", "pause", "stop", "next", "eject", "shuffle", "repeat", "pl",
-    "vol", "pos", "time", "title", "vis", "clutO", "clutI", "clutD", "logo"];
+    "vol", "pos", "time", "clutO", "clutD", "logo"];
 
   function hit(x, y) {
     for (const id of ORDER) {
@@ -554,8 +634,9 @@ window.RioAmp = (() => {
 
   const clamp = (v) => Math.max(0, Math.min(1, v));
   const volume = () => Number($("#volume").value) / 100;
+  const coarse = () => window.matchMedia("(pointer: coarse)").matches;
 
-  // What the window shows right now, from the same state the player bar uses.
+  // What the windows show right now, from the same state the standard player uses.
   function snapshot() {
     const ns = nowState();
     const { pos, dur } = progressNow();
@@ -586,23 +667,35 @@ window.RioAmp = (() => {
   }
   const spellable = (text) => [...text].every((ch) => FONT[ch]);
 
+  // One sprite, if the sheet has it.
+  function put(g, img, sx, sy, w, h, dx, dy) {
+    if (img && sx + w <= img.width && sy + h <= img.height) g.drawImage(img, sx, sy, w, h, dx, dy, w, h);
+  }
+  // Words in the skin's own lettering.
+  function letters(g, sheet, str, x, y, w) {
+    [...plain(str)].slice(0, Math.floor(w / 5)).forEach((ch, i) => {
+      const at = FONT[ch] || FONT[" "];
+      put(g, sheet, at[0] * 5, at[1] * 6, 5, 6, x + i * 5, y);
+    });
+  }
+  // A window's picture onto the screen, every pixel a clean square.
+  function present(el, base) {
+    const g = el.getContext("2d");
+    g.imageSmoothingEnabled = false;
+    g.clearRect(0, 0, el.width, el.height);
+    g.drawImage(base, 0, 0, el.width, el.height);
+    return g;
+  }
+
   function draw() {
     const { skin, base } = state;
-    if (!skin || !base) return;
+    if (!skin || !base) return null;
     const g = base.getContext("2d");
     const sh = skin.sheets;
     const s = snapshot();
     const now = performance.now();
-    const spr = (img, sx, sy, w, h, dx, dy) => {
-      if (img && sx + w <= img.width && sy + h <= img.height) g.drawImage(img, sx, sy, w, h, dx, dy, w, h);
-    };
+    const spr = (...a) => put(g, ...a);
     const down = (id) => !!state.press && state.press.id === id && state.press.inside;
-    const text = (str, x, y, w) => {
-      [...str].slice(0, Math.floor(w / 5)).forEach((ch, i) => {
-        const at = FONT[ch] || FONT[" "];
-        spr(sh.text, at[0] * 5, at[1] * 6, 5, 6, x + i * 5, y);
-      });
-    };
 
     g.clearRect(0, 0, W, H);
     spr(sh.main, 0, 0, W, H, 0, 0);
@@ -649,8 +742,8 @@ window.RioAmp = (() => {
     if (title !== state.title) { state.title = title; state.scroll = 0; state.scrollAt = now + 1200; }
     state.overlay = drawTitle(g, sh, plain(title), now);
 
-    if (s.t && s.t.bitrate) text(String(s.t.bitrate).padStart(3), 111, 43, 15);
-    if (s.t && s.t.sample_rate) text(String(Math.round(s.t.sample_rate / 1000)).padStart(2), 156, 43, 10);
+    if (s.t && s.t.bitrate) letters(g, sh.text, String(s.t.bitrate).padStart(3), 111, 43, 15);
+    if (s.t && s.t.sample_rate) letters(g, sh.text, String(Math.round(s.t.sample_rate / 1000)).padStart(2), 156, 43, 10);
     spr(sh.monoster, 29, 12, 27, 12, 212, 41);
     spr(sh.monoster, 0, s.has && s.status !== "stop" ? 0 : 12, 29, 12, 239, 41);
 
@@ -660,12 +753,10 @@ window.RioAmp = (() => {
     spr(sh.volume, state.drag && state.drag.id === "vol" ? 0 : 15, 422, 14, 11, 107 + Math.round(vol * 51), 58);
     if (sh.balance.volumeAsBalance) spr(sh.balance.img, 0, 0, 38, 13, 177, 57);
     else spr(sh.balance, 9, 0, 38, 13, 177, 57);
-    const bal = sh.balance.volumeAsBalance ? sh.balance.img : sh.balance;
-    spr(bal, 15, 422, 14, 11, 177 + 12, 58);
+    spr(sh.balance.volumeAsBalance ? sh.balance.img : sh.balance, 15, 422, 14, 11, 177 + 12, 58);
 
-    spr(sh.shufrep, down("eq") ? 46 : 0, 61, 23, 12, 219, 58);
-    const plOpen = !$("#nowplaying").hidden;
-    spr(sh.shufrep, down("pl") ? 69 : 23, plOpen ? 73 : 61, 23, 12, 242, 58);
+    spr(sh.shufrep, 0, 61, 23, 12, 219, 58);
+    spr(sh.shufrep, down("pl") ? 69 : 23, state.listShown ? 73 : 61, 23, 12, 242, 58);
 
     // the seek bar; no handle when there is nothing to seek in
     spr(sh.posbar, 0, 0, 248, 10, 16, 72);
@@ -680,7 +771,8 @@ window.RioAmp = (() => {
     spr(sh.shufrep, 28, (s.ns.shuffle ? 30 : 0) + (down("shuffle") ? 15 : 0), 47, 15, 164, 89);
     spr(sh.shufrep, 0, (s.ns.repeat !== "off" ? 30 : 0) + (down("repeat") ? 15 : 0), 28, 15, 210, 89);
 
-    blit();
+    drawOverlay(present(state.el, base));
+    drawBars(s, shownPos);
     return s;
   }
 
@@ -699,11 +791,31 @@ window.RioAmp = (() => {
     const start = fits ? 0 : Math.floor(state.scroll / 5) % chars.length;
     for (let i = 0; i < Math.floor(WIDTH / 5) && (i < chars.length || !fits); i++) {
       const at = FONT[chars[(start + i) % chars.length]] || FONT[" "];
-      if (at[0] * 5 + 5 <= sh.text.width && at[1] * 6 + 6 <= sh.text.height) {
-        g.drawImage(sh.text, at[0] * 5, at[1] * 6, 5, 6, X + i * 5, Y, 5, 6);
-      }
+      put(g, sh.text, at[0] * 5, at[1] * 6, 5, 6, X + i * 5, Y);
     }
     return null;
+  }
+  function drawOverlay(g) {
+    const o = state.overlay;
+    if (!o) return;
+    const k = state.el.width / W;
+    g.save();
+    g.scale(k, k);
+    g.beginPath();
+    g.rect(111, 25, 154, 10);
+    g.clip();
+    g.fillStyle = state.skin.ink;
+    g.font = "600 8px system-ui, -apple-system, 'Segoe UI', sans-serif";
+    g.textBaseline = "middle";
+    const w = g.measureText(o.loop).width;
+    if (o.fits || w <= 154) {
+      g.fillText(state.title, 111, 30.5);
+    } else {
+      const off = state.scroll % w;
+      g.fillText(o.loop, 111 - off, 30.5);
+      g.fillText(o.loop, 111 - off + w, 30.5);
+    }
+    g.restore();
   }
 
   // The spectrum. There is no measuring what a receiver across the house is
@@ -741,49 +853,300 @@ window.RioAmp = (() => {
     }
   }
 
-  // The 275x116 picture onto the screen, every pixel a clean square.
-  function blit() {
-    const el = state.el;
-    const g = el.getContext("2d");
-    g.imageSmoothingEnabled = false;
-    g.clearRect(0, 0, el.width, el.height);
-    g.drawImage(state.base, 0, 0, el.width, el.height);
-    const o = state.overlay;
-    if (!o) return;
-    const k = el.width / W;
-    g.save();
-    g.scale(k, k);
-    g.beginPath();
-    g.rect(111, 25, 154, 10);
-    g.clip();
-    g.fillStyle = state.skin.ink;
-    g.font = "600 8px system-ui, -apple-system, 'Segoe UI', sans-serif";
-    g.textBaseline = "middle";
-    const w = g.measureText(o.loop).width;
-    if (o.fits || w <= 154) {
-      g.fillText(state.title, 111, 30.5);
-    } else {
-      const off = state.scroll % w;
-      g.fillText(o.loop, 111 - off, 30.5);
-      g.fillText(o.loop, 111 - off + w, 30.5);
+  // The list window's title bar and bottom bar (the classic playlist frame).
+  function drawBars(s, shownPos) {
+    const L = state.list;
+    if (!L || !state.listShown) return;
+    const sh = state.skin.sheets, p = sh.pledit;
+    const y = document.hasFocus() ? 0 : 21;
+    let g = L.topBase.getContext("2d");
+    g.clearRect(0, 0, W, 20);
+    for (let x = 25; x < W - 25; x += 25) put(g, p, 127, y, 25, 20, x, 0);
+    put(g, p, 26, y, 100, 20, 87, 0);
+    put(g, p, 0, y, 25, 20, 0, 0);
+    put(g, p, 153, y, 25, 20, W - 25, 0);
+    present(L.top, L.topBase);
+    g = L.botBase.getContext("2d");
+    g.clearRect(0, 0, W, 38);
+    put(g, p, 0, 72, 125, 38, 0, 0);
+    put(g, p, 126, 72, 150, 38, 125, 0);
+    if (s.has) {
+      letters(g, sh.text, state.queueMs ? `${fmtTime(shownPos)}/${fmtTime(state.queueMs)}` : fmtTime(shownPos), 132, 10, 90);
+      letters(g, sh.text, fmtTime(shownPos).padStart(5), 191, 23, 25);
     }
-    g.restore();
+    present(L.bot, L.botBase);
   }
 
-  // How big: as wide as a phone's screen; life-size on a desk, or twice that.
-  function layout() {
-    const el = state.el;
-    if (!el) return;
-    const narrow = window.matchMedia("(max-width: 860px)").matches;
-    const scale = narrow ? Math.min(innerWidth / W, 2) : Math.min(state.double ? 2 : 1, innerWidth / W);
-    state.scale = scale;
+  // ------------------------------------------------------------ the list window: where to play, what to play
+
+  function buildList() {
+    const L = { topBase: canvas(W, 20), botBase: canvas(W, 38) };
+    L.top = h("canvas", { class: "rioamp-bar" });
+    L.bot = h("canvas", { class: "rioamp-bar" });
+    L.targets = h("div", { class: "rioamp-col" });
+    L.cats = h("div", { class: "rioamp-cats" });
+    L.crumb = h("button", { class: "rioamp-crumb", type: "button", onclick: () => { if (state.nav.length > 1) { state.nav.pop(); show(); } } });
+    L.filter = h("input", { class: "rioamp-filter", type: "search", placeholder: "find…", "aria-label": "Find in this list",
+      autocomplete: "off", oninput: renderRows });
+    L.rows = h("div", { class: "rioamp-rows", onscroll: placeHandle });
+    L.handle = h("div", { class: "rioamp-handle" });
+    L.left = h("div", { class: "rioamp-edge" });
+    L.right = h("div", { class: "rioamp-edge r" }, L.handle);
+    L.el = h("div", { class: "rioamp-list" }, L.top,
+      h("div", { class: "rioamp-mid" }, L.left,
+        h("div", { class: "rioamp-body" },
+          h("div", { class: "rioamp-picks" },
+            h("div", { class: "rioamp-pick" }, h("div", { class: "rioamp-head" }, "Play on"), L.targets),
+            h("div", { class: "rioamp-pick wide" }, h("div", { class: "rioamp-head" }, "Library"), L.cats)),
+          h("div", { class: "rioamp-nav" }, L.crumb, L.filter),
+          L.rows),
+        L.right),
+      L.bot);
+
+    const where = (e, el, hgt) => {
+      const b = el.getBoundingClientRect();
+      return [((e.clientX - b.left) / b.width) * W, ((e.clientY - b.top) / b.height) * hgt];
+    };
+    L.top.addEventListener("click", (e) => {
+      const [x, y] = where(e, L.top, 20);
+      if (x >= 260 && y < 15) toggleList();
+    });
+    L.bot.addEventListener("click", (e) => {
+      const [x, y] = where(e, L.bot, 38);
+      const at = { x: e.clientX, y: e.clientY };
+      if (y >= 6 && y < 28) {
+        if (x >= 12 && x < 38) open("artists");
+        else if (x >= 41 && x < 67) showMenu(at, [{ label: "Clear Up Next", icon: "trash", run: () => Queue.edit("clear") }], "Up Next");
+        else if ((x >= 99 && x < 125) || (x >= 229 && x < 255)) showMenu(at, menuItems(), "RioAmp");
+      }
+      if (y >= 19 && y < 33) {
+        const i = [128, 136, 145, 155, 164, 172, 182].findIndex((edge) => x < edge);
+        if (i > 0) { act(["prev", "play", "pause", "stop", "next", "eject"][i - 1], at); tick(); }
+      }
+    });
+    // the scroll handle
+    const scrub = (e) => {
+      const b = L.right.getBoundingClientRect();
+      const track = L.right.clientHeight - 18;
+      const y = ((e.clientY - b.top) / b.height) * L.right.clientHeight;
+      L.rows.scrollTop = clamp((y - 9) / Math.max(1, track)) * (L.rows.scrollHeight - L.rows.clientHeight);
+    };
+    L.right.addEventListener("pointerdown", (e) => { L.right.setPointerCapture(e.pointerId); L.scrubbing = true; scrub(e); });
+    L.right.addEventListener("pointermove", (e) => { if (L.scrubbing) scrub(e); });
+    for (const ev of ["pointerup", "pointercancel"]) L.right.addEventListener(ev, () => { L.scrubbing = false; });
+    // right-click or long press on a row: what can be done with it
+    L.rows.addEventListener("pointerdown", (e) => {
+      const row = e.target.closest && e.target.closest(".rioamp-row");
+      state.menuRow = row ? row._row : null;
+    }, true);
+    L.rows.addEventListener("contextmenu", (e) => {
+      const row = e.target.closest && e.target.closest(".rioamp-row");
+      state.menuRow = row ? row._row : null;
+    }, true);
+    bindContext(L.rows, () => {
+      const r = state.menuRow;
+      const items = r && r.menu ? r.menu() : [];
+      return items.length ? items : r && r.run ? [{ label: r.more ? "Open" : "Play", icon: "play", run: r.run }] : menuItems();
+    }, () => (state.menuRow ? state.menuRow.label : "RioAmp"));
+
+    L.cats.append(...CATS.map(([id, label]) => h("button", { type: "button", "data-cat": id, onclick: () => open(id) }, label)));
+    return L;
+  }
+
+  function placeHandle() {
+    const L = state.list;
+    if (!L) return;
+    const max = L.rows.scrollHeight - L.rows.clientHeight;
+    L.handle.style.top = `${max > 0 ? (L.rows.scrollTop / max) * (L.right.clientHeight - 18) : 0}px`;
+  }
+
+  // Where the music goes: this browser, a receiver or a speaker.
+  function renderTargets() {
+    const L = state.list;
+    if (!L) return;
+    const options = (RX.on ? [] : [{ id: "", name: "This browser", online: true }]).concat(
+      Player.receivers.filter(canTarget).map((r) => ({ id: r.id, name: r.id === RX.id ? `This device (${r.name})` : r.name, online: r.online })));
+    const key = JSON.stringify([Player.target, options]);
+    if (key === state.targetKey) return;
+    state.targetKey = key;
+    L.targets.replaceChildren(...options.map((o) => h("button", {
+      type: "button", class: `${o.id === Player.target ? "sel cur" : ""}${o.online ? "" : " dim"}`, title: o.name,
+      onclick: () => chooseTarget(o.id),
+    }, h("span", { class: "l" }, o.name))));
+  }
+
+  // The lists. A row is {label, right, run, menu, more, current, dim}.
+  const sumMs = (tracks) => tracks.reduce((n, t) => n + (t.duration_ms || 0), 0);
+  const trackMenuItems = (tracks) => [
+    { label: "Play next", icon: "play", run: () => playNext(tracks) },
+    { label: "Add to Up Next", icon: "list", run: () => addToQueue(tracks) },
+  ];
+  function trackRows(tracks, { numbers = true, artist = true } = {}) {
+    return tracks.map((t, i) => ({
+      label: `${numbers ? `${i + 1}. ` : ""}${artist && t.artist ? `${t.artist} - ` : ""}${t.title}`,
+      right: fmtTime(t.duration_ms),
+      run: () => Player.playTracks(tracks, i),
+      menu: () => trackMenuItems([t]),
+    }));
+  }
+  function albumRow(al, withArtist) {
+    const tracks = async () => (await api(`/api/albums/${al.id}`)).tracks;
+    return {
+      label: withArtist && al.artist ? `${al.artist} - ${al.title}` : al.title, right: al.year || "", more: true,
+      run: () => push(al.title, async () => {
+        const list = await tracks();
+        const mixed = list.some((t) => t.artist !== list[0].artist);
+        return trackRows(list, { artist: mixed });
+      }),
+      menu: () => [
+        { label: "Play", icon: "play", run: async () => Player.playTracks(await tracks(), 0) },
+        { label: "Play next", icon: "play", run: async () => playNext(await tracks()) },
+        { label: "Add to Up Next", icon: "list", run: async () => addToQueue(await tracks()) },
+      ],
+    };
+  }
+  const LOAD = {
+    async queue() {
+      const q = await Queue.get();
+      if (!q.known) { state.queueMs = 0; return [{ label: "This player keeps its own list", dim: true }]; }
+      state.queueMs = sumMs(q.tracks);
+      if (!q.tracks.length) return [{ label: "Nothing lined up. Pick something from the Library.", dim: true }];
+      return q.tracks.map((t, i) => ({
+        label: `${i + 1}. ${t.artist ? `${t.artist} - ` : ""}${t.title}`, right: fmtTime(t.duration_ms), current: i === q.index,
+        run: () => Queue.edit("jump", { pos: i }).catch(fail),
+        menu: () => (q.editable && i !== q.index
+          ? [{ label: "Play", icon: "play", run: () => Queue.edit("jump", { pos: i }) },
+            { label: "Remove", icon: "trash", run: () => Queue.edit("remove", { pos: i }) }] : []),
+      }));
+    },
+    artists: async () => (await api("/api/artists")).map((a) => ({
+      label: a.name, right: a.track_count, more: true,
+      run: () => push(a.name, async () => (await api(`/api/artists/${a.id}`)).albums.map((al) => albumRow(al))),
+    })),
+    albums: async () => (await api("/api/albums")).map((al) => albumRow(al, true)),
+    songs: async () => trackRows((await api("/api/songs?offset=0&limit=100000")).tracks, { numbers: false }),
+    genres: async () => (await api("/api/genres")).map((gn) => ({
+      label: gn.name, right: gn.track_count, more: true,
+      run: () => push(gn.name, async () => (await api(`/api/genres/${gn.id}`)).albums.map((al) => albumRow(al, true))),
+    })),
+    playlists: async () => (await api("/api/playlists")).map((p) => ({
+      label: p.name, right: p.track_count, more: true,
+      run: () => push(p.name, async () => trackRows((await api(`/api/playlists/${p.id}`)).tracks)),
+    })),
+    podcasts: async () => (await api("/api/podcasts")).map((p) => ({
+      label: p.title, more: true,
+      run: () => push(p.title, async () => (await api(`/api/podcasts/${p.id}`)).episodes.filter((e) => e.track_id).map((e) => ({
+        label: e.title, right: e.duration_ms ? fmtTime(e.duration_ms) : "", dim: !!e.played,
+        run: () => playEpisode(e, p).catch(fail),
+      }))),
+    })),
+    recent: async () => (await api("/api/recent")).map((al) => albumRow(al, true)),
+  };
+
+  function open(cat) {
+    if (!state.listShown) toggleList();
+    state.nav = [{ cat, title: (CATS.find((c) => c[0] === cat) || [])[1] || cat, load: LOAD[cat] }];
+    show();
+  }
+  function push(title, load) {
+    state.nav.push({ cat: state.nav[0].cat, title, load });
+    show();
+  }
+  // Loads and shows the list on top; with keep, where it was scrolled to stays.
+  async function show(keep) {
+    const L = state.list, top = state.nav[state.nav.length - 1];
+    if (!L || !top) return;
+    const seq = ++state.loadSeq;
+    for (const b of L.cats.children) b.classList.toggle("sel", b.dataset.cat === top.cat);
+    L.crumb.textContent = state.nav.length > 1 ? `‹ ${state.nav.map((n) => n.title).join(" › ")}` : top.title;
+    if (!keep) L.filter.value = "";
+    let rows;
+    try { rows = await top.load(); } catch (e) { rows = [{ label: e.message || String(e), dim: true }]; }
+    if (seq !== state.loadSeq || !state.list) return;
+    state.rows = rows;
+    const at = L.rows.scrollTop;
+    renderRows();
+    if (keep) L.rows.scrollTop = at;
+    else {
+      const cur = L.rows.querySelector(".cur");
+      L.rows.scrollTop = cur ? Math.max(0, cur.offsetTop - L.rows.clientHeight / 3) : 0;
+    }
+    placeHandle();
+  }
+  function renderRows() {
+    const L = state.list;
+    if (!L) return;
+    const find = L.filter.value.trim().toLowerCase();
+    const rows = find ? state.rows.filter((r) => r.label.toLowerCase().includes(find)) : state.rows;
+    const MAX = 3000;
+    L.rows.replaceChildren(...rows.slice(0, MAX).map((r) => {
+      const el = h("div", { class: `rioamp-row${r.current ? " cur" : ""}${r.dim ? " dim" : ""}`, onclick: r.run || null },
+        h("span", { class: "l" }, r.label), h("span", { class: "r" }, r.more ? `${r.right || ""} ›` : r.right || ""));
+      el._row = r;
+      return el;
+    }), rows.length > MAX ? h("div", { class: "rioamp-row dim" }, `…and ${rows.length - MAX} more: type in “find” to narrow it`) : "",
+    find && !rows.length ? h("div", { class: "rioamp-row dim" }, "Nothing here by that name") : "");
+    placeHandle();
+  }
+  // Up Next follows the player.
+  function queueChanged() {
+    const top = state.nav[state.nav.length - 1];
+    if (state.on && top && top.cat === "queue") show(true);
+  }
+
+  // ------------------------------------------------------------ size and place
+
+  // On a phone the windows fill the screen. On a desk they are life-size or
+  // twice that, and an installed app's window shrinks to fit around them.
+  function layout(fit) {
+    if (!state.on) return;
+    const touch = coarse();
+    const rw = state.room.clientWidth, rh = state.room.clientHeight;
+    const full = state.listShown ? H + LIST_H : H;
+    let k, hn;
+    if (touch) {
+      k = Math.min(rw / W, 2.5, state.listShown ? rh / (H + 140) : rh / H);
+      hn = state.listShown ? rh / k : H;
+    } else {
+      k = Math.max(0.5, Math.min(state.double ? 2 : 1, rw / W));
+      hn = state.listShown ? Math.max(H + 100, Math.min(full, rh / k)) : H;
+      if (fit === true) fitWindow(W * k, full * k);
+    }
+    state.scale = k;
+    state.desk.classList.toggle("coarse", touch);
+    const st = state.stack.style;
+    st.height = `${hn}px`;
+    st.left = `${Math.max(0, (rw - W * k) / 2)}px`;
+    st.top = `${touch ? 0 : Math.max(0, (rh - hn * k) / 2)}px`;
+    st.transform = `scale(${k})`;
     const dpr = window.devicePixelRatio || 1;
-    el.style.width = `${W * scale}px`;
-    el.style.height = `${H * scale}px`;
-    const bw = Math.round(W * scale * dpr), bh = Math.round(H * scale * dpr);
-    if (el.width !== bw || el.height !== bh) { el.width = bw; el.height = bh; }
-    document.documentElement.style.setProperty("--player-h", `${Math.ceil(H * scale)}px`);
+    const size = (el, hgt) => {
+      el.style.width = `${W}px`;
+      el.style.height = `${hgt}px`;
+      const bw = Math.round(W * k * dpr), bh = Math.round(hgt * k * dpr);
+      if (el.width !== bw || el.height !== bh) { el.width = bw; el.height = bh; }
+    };
+    size(state.el, H);
+    size(state.list.top, 20);
+    size(state.list.bot, 38);
+    state.list.el.hidden = !state.listShown;
     draw();
+    placeHandle();
+  }
+  function fitWindow(w, hgt) {
+    const app = ["standalone", "minimal-ui", "window-controls-overlay"].some((m) => window.matchMedia(`(display-mode: ${m})`).matches);
+    if (!app) return;
+    try {
+      if (!sessionStorage.getItem("rio.rioamp.win")) sessionStorage.setItem("rio.rioamp.win", JSON.stringify([outerWidth, outerHeight]));
+      window.resizeTo(Math.ceil(w + outerWidth - innerWidth), Math.ceil(hgt + outerHeight - innerHeight));
+    } catch { /* the browser keeps its window as it is */ }
+  }
+  function unfitWindow() {
+    try {
+      const was = JSON.parse(sessionStorage.getItem("rio.rioamp.win") || "null");
+      sessionStorage.removeItem("rio.rioamp.win");
+      if (was) window.resizeTo(was[0], was[1]);
+    } catch { /* as above */ }
   }
 
   function tick() {
@@ -794,34 +1157,36 @@ window.RioAmp = (() => {
       || state.bars.some((b) => b > 0.5);
     state.timer = setTimeout(tick, lively ? 50 : 250);
   }
+  // The player's state changed (app.js says so).
+  function poke() {
+    if (!state.on) return;
+    renderTargets();
+    const key = `${Queue.remoteKey()}|${Player.index}|${Player.queue.length}`;
+    if (key !== state.queueKey) { state.queueKey = key; queueChanged(); }
+    tick();
+  }
 
   // ------------------------------------------------------------ what the buttons do
 
   function menuItems() {
-    const narrow = window.matchMedia("(max-width: 860px)").matches;
     return [
       { label: "Load a skin…", icon: "download", run: chooseSkin },
       state.skin && state.skin.name ? { label: "Back to the RioAmp skin", icon: "refresh", run: useSkin } : null,
-      narrow ? null : { label: state.double ? "Normal size" : "Double size", icon: "monitor", run: toggleDouble },
-      { label: "Now Playing", icon: "list", run: () => NowPlaying.open() },
+      coarse() ? null : { label: state.double ? "Normal size" : "Double size", icon: "monitor", run: toggleDouble },
+      { label: state.listShown ? "Hide the list" : "Show the list", icon: "list", run: toggleList },
       "-",
-      { label: "Back to the standard player", icon: "x", run: () => Skinned.set(false) },
+      { label: "Back to RioServer NG", icon: "x", run: () => Skinned.set(false) },
     ];
   }
   function toggleDouble() {
     state.double = !state.double;
-    store("rio.rioamp.double", state.double ? "1" : null);
-    layout();
+    store("rio.rioamp.double", state.double ? null : "0");
+    layout(true);
   }
-  function playOnMenu(at) {
-    const options = (RX.on ? [] : [{ id: "", name: "This browser", icon: "monitor" }]).concat(
-      Player.receivers.filter(canTarget).map((r) => ({
-        id: r.id, icon: "cast",
-        name: `${r.id === RX.id ? `This device (${r.name})` : r.name}${r.online ? "" : " · offline"}`,
-      })));
-    showMenu(at, options.map((o) => ({
-      label: o.name, icon: o.id === Player.target ? "check" : o.icon, run: () => chooseTarget(o.id),
-    })), "Play on");
+  function toggleList() {
+    state.listShown = !state.listShown;
+    store("rio.rioamp.list", state.listShown ? null : "0");
+    layout(true);
   }
 
   function act(id, at) {
@@ -837,20 +1202,17 @@ window.RioAmp = (() => {
         if (Player.target) Player.command(live ? "toggle" : "stop");
         else { audio.pause(); audio.currentTime = 0; renderNowPlaying(); }
       },
-      eject: () => playOnMenu(at),
+      eject: () => open("artists"),
       shuffle: () => { if (!live) toggleShuffle(); },
       repeat: () => { if (!live) cycleRepeat(); },
-      pl: () => NowPlaying.toggle(true),
+      pl: toggleList,
       time: () => {
         state.remaining = !state.remaining;
         store("rio.rioamp.remaining", state.remaining ? "1" : null);
       },
-      title: () => NowPlaying.open(),
-      vis: () => NowPlaying.open(),
-      clutI: () => NowPlaying.open(),
       clutO: () => showMenu(at, menuItems(), "RioAmp"),
       menu: () => showMenu(at, menuItems(), "RioAmp"),
-      clutD: toggleDouble,
+      clutD: () => { if (!coarse()) toggleDouble(); },
       close: () => { Skinned.set(false); toast("RioAmp is off. Settings turns it back on."); },
       logo: () => toast("RioAmp. It really kicks the alpaca's butt."),
     };
@@ -952,13 +1314,31 @@ window.RioAmp = (() => {
     try { await saved(null); } catch { /* nothing was kept */ }
     setSkin(builtinSkin());
   }
+  // A piece of a sheet as a picture a stylesheet can tile.
+  function cut(img, sx, sy, w, hgt) {
+    const c = canvas(w, hgt);
+    put(c.getContext("2d"), img, sx, sy, w, hgt, 0, 0);
+    return `url(${c.toDataURL()})`;
+  }
   function setSkin(skin) {
     state.skin = skin;
-    // around the window, the bar takes the colour of the skin's own edge
+    if (!state.on) return;
+    // around the windows, the screen takes the colour of the skin's own edge
+    let edge = "#1b252b";
     try {
       const d = skin.sheets.main.getContext("2d").getImageData(2, 60, 1, 1).data;
-      document.documentElement.style.setProperty("--rioamp-edge", `rgb(${d[0]},${d[1]},${d[2]})`);
-    } catch { /* the stylesheet's own */ }
+      edge = `rgb(${d[0]},${d[1]},${d[2]})`;
+    } catch { /* the usual */ }
+    const root = state.desk.style, L = state.list, p = skin.sheets.pledit;
+    root.setProperty("--rioamp-edge", edge);
+    root.setProperty("--pl-normal", skin.list.normal);
+    root.setProperty("--pl-current", skin.list.current);
+    root.setProperty("--pl-bg", skin.list.bg);
+    root.setProperty("--pl-sel", skin.list.sel);
+    L.left.style.backgroundImage = cut(p, 0, 42, 12, 29);
+    L.right.style.backgroundImage = cut(p, 31, 42, 20, 29);
+    L.handle.style.backgroundImage = cut(p, 52, 53, 8, 18);
+    for (const meta of document.querySelectorAll('meta[name="theme-color"]')) meta.setAttribute("content", edge);
     draw();
     Skinned.changed();
   }
@@ -977,18 +1357,27 @@ window.RioAmp = (() => {
     el.addEventListener("pointerup", onUp);
     el.addEventListener("pointercancel", onUp);
     el.addEventListener("wheel", (e) => { e.preventDefault(); nudgeVolume(e.deltaY < 0 ? 5 : -5); draw(); }, { passive: false });
-    el.addEventListener("dragover", (e) => e.preventDefault());
-    el.addEventListener("drop", (e) => {
+    bindContext(el, menuItems, () => "RioAmp");
+    state.list = buildList();
+    state.stack = h("div", { class: "rioamp-stack" }, el, state.list.el);
+    state.room = h("div", { class: "rioamp-room" }, state.stack);
+    state.desk = h("div", { class: "rioamp-desk" }, state.room);
+    state.desk.addEventListener("dragover", (e) => e.preventDefault());
+    state.desk.addEventListener("drop", (e) => {
       e.preventDefault();
       const f = e.dataTransfer.files[0];
       if (f) loadSkinFile(f).catch(fail);
     });
-    bindContext(el, menuItems, () => "RioAmp");
-    $("#player").append(el);
+    document.body.append(state.desk);
     document.body.classList.add("rioamp");
+    state.was = document.title;
+    document.title = "RioAmp";
+    Queue.listeners.add(queueChanged);
+    state.targetKey = state.queueKey = "";
     setSkin(builtinSkin());
-    layout();
-    tick();
+    layout(true);
+    open("queue");
+    poke();
     try {
       const kept = await saved();
       if (kept && state.on) setSkin(await readSkin(kept.buffer, kept.name));
@@ -998,26 +1387,25 @@ window.RioAmp = (() => {
     if (!state.on) return;
     state.on = false;
     clearTimeout(state.timer);
-    state.el.remove();
-    state.el = state.base = null;
+    Queue.listeners.delete(queueChanged);
+    state.desk.remove();
+    state.desk = state.room = state.stack = state.el = state.base = state.list = null;
     state.press = state.drag = null;
     document.body.classList.remove("rioamp");
-    document.documentElement.style.removeProperty("--player-h");
-    document.documentElement.style.removeProperty("--rioamp-edge");
+    document.title = state.was || document.title;
+    applyTheme(store("rio.theme") || "system"); // the browser's own bar gets its colour back
+    unfitWindow();
   }
 
-  window.addEventListener("resize", layout);
+  window.addEventListener("resize", () => layout());
   document.addEventListener("visibilitychange", tick);
   window.addEventListener("focus", () => state.on && draw());
   window.addEventListener("blur", () => state.on && draw());
   document.addEventListener("keydown", onKey);
 
-  const api = {
-    start, stop, chooseSkin, loadSkinFile,
+  return {
+    start, stop, chooseSkin, loadSkinFile, poke,
     defaultSkin: useSkin,
-    poke: () => { if (state.on) tick(); },
     get skinName() { return state.skin && state.skin.name; },
-    _test: { inflate, unzip, readSkin, builtinSkin },
   };
-  return api;
 })();

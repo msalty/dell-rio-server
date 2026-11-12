@@ -469,7 +469,7 @@ $("#volume").value = Math.round(audio.volume * 100);
 
 // ---------------------------------------------------------------- RioAmp
 
-// The player bar as a 1990s desktop player, for those who miss one. It is
+// The whole interface as a 1990s desktop player, for those who miss one. It is
 // its own file (rioamp.js), fetched only when it is switched on in Settings.
 const Skinned = {
   on: store("rio.rioamp") === "1",
@@ -2609,7 +2609,7 @@ async function viewSettings() {
           applyTheme(k);
           for (const b of seg.children) { b.classList.toggle("sel", b === e.currentTarget); b.setAttribute("aria-checked", String(b === e.currentTarget)); }
         } }, icon(ic), label)));
-  // The player bar: the usual one, or RioAmp and the skin it wears.
+  // The usual interface, or RioAmp and the skin it wears.
   const skinRow = h("div", { class: "btn-row", style: "margin-top:12px" });
   const playerSeg = h("div", { class: "segmented", role: "radiogroup", "aria-label": "Player" });
   const renderPlayer = () => {
@@ -2636,8 +2636,8 @@ async function viewSettings() {
     h("section", { class: "settings-section" },
       h("h2", {}, "Player"),
       playerSeg,
-      h("p", { class: "subtle" }, "RioAmp turns the player bar into a 1990s desktop player, and wears the classic skins (.wsz) made for the one it tips its hat to. ",
-        "It really kicks the alpaca's butt. The choice and the skin are kept in this browser."),
+      h("p", { class: "subtle" }, "RioAmp takes over the whole screen as a 1990s desktop player, and wears the classic skins (.wsz) made for the one it tips its hat to. ",
+        "It really kicks the alpaca's butt. Its menu, or its close button, brings you back here. The choice and the skin are kept in this browser."),
       skinRow),
     h("section", { class: "settings-section" },
       h("div", { class: "head-row", style: "margin-bottom:6px" },
