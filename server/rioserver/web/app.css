@@ -537,3 +537,50 @@ html { touch-action: manipulation; -webkit-text-size-adjust: 100%; text-size-adj
 body.is-live #btn-shuffle, body.is-live #btn-prev, body.is-live #btn-next, body.is-live #btn-repeat,
 body.is-live .mode-shuffle, body.is-live .mode-repeat, body.is-live .np-main .skip,
 body.is-live .seek-input, body.is-live .t-dur { visibility: hidden; }
+
+/* RioAmp (rioamp.js): while it is on, it is the whole interface. Its
+ * windows are laid out at the skin's own size (275 pixels wide) and scaled
+ * as one by the script; the list window's colours come from the skin. */
+body.rioamp { --player-h: 0px; }
+body.rioamp .app, body.rioamp .player, body.rioamp #nowplaying { display: none; }
+.rioamp-desk { position: fixed; inset: 0; z-index: 9; display: flex; padding: var(--safe-t) 0 var(--safe-b); background: #07090b; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.rioamp-desk.coarse { background: var(--rioamp-edge, #1b252b); }
+.rioamp-room { flex: 1; position: relative; min-width: 0; overflow: hidden; }
+.rioamp-stack { position: absolute; width: 275px; transform-origin: 0 0; display: flex; flex-direction: column; }
+.rioamp-stack canvas { display: block; flex: none; touch-action: none; outline: none; cursor: default; }
+.rioamp-stack canvas[hidden] { display: none; }
+.rioamp-list { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.rioamp-list[hidden] { display: none; }
+.rioamp-mid { flex: 1; min-height: 0; display: flex; }
+.rioamp-edge { flex: none; position: relative; width: 12px; background-size: 12px 29px; image-rendering: pixelated; }
+.rioamp-edge.r { width: 20px; background-size: 20px 29px; touch-action: none; }
+.rioamp-handle { position: absolute; right: 5px; top: 0; width: 8px; height: 18px; background-size: 8px 18px; image-rendering: pixelated; }
+.rioamp-body { --row: 13px; --rule: color-mix(in srgb, var(--pl-normal) 35%, var(--pl-bg)); flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--pl-bg); color: var(--pl-normal); font: 10px/var(--row) Arial, Helvetica, sans-serif; }
+.coarse .rioamp-body { --row: 18px; font-size: 11px; }
+.rioamp-body button, .rioamp-row { display: flex; align-items: center; width: 100%; height: var(--row); padding: 0 3px; border: 0; border-radius: 0; background: none; color: inherit; font: inherit; text-align: left; white-space: nowrap; overflow: hidden; cursor: default; }
+.rioamp-body .l { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.rioamp-body .r { flex: none; padding-left: 6px; }
+.rioamp-body .sel { background: var(--pl-sel); }
+.rioamp-body .cur { color: var(--pl-current); }
+.rioamp-body .dim { opacity: .55; }
+.rioamp-picks { flex: none; display: flex; height: calc(var(--row) * 5); border-bottom: 1px solid var(--rule); }
+.rioamp-pick { flex: 2; min-width: 0; display: flex; flex-direction: column; }
+.rioamp-pick.wide { flex: 3; border-left: 1px solid var(--rule); }
+.rioamp-head { flex: none; height: var(--row); padding: 0 3px; color: var(--pl-current); font-size: .8em; letter-spacing: 1px; text-transform: uppercase; opacity: .7; }
+.rioamp-col { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: none; }
+.rioamp-cats { display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: var(--row); }
+.rioamp-nav { flex: none; display: flex; height: calc(var(--row) + 1px); border-bottom: 1px solid var(--rule); }
+.rioamp-body .rioamp-crumb { flex: 1; min-width: 0; width: auto; display: block; text-overflow: ellipsis; color: var(--pl-current); }
+.rioamp-filter { flex: none; width: 76px; height: var(--row); padding: 0 3px; border: 0; border-left: 1px solid var(--rule); border-radius: 0; background: none; color: inherit; font: inherit; outline: none; -webkit-appearance: none; appearance: none; user-select: text; -webkit-user-select: text; }
+.rioamp-filter::placeholder { color: inherit; opacity: .5; }
+.rioamp-rows { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; position: relative; }
+.rioamp-rows::-webkit-scrollbar, .rioamp-col::-webkit-scrollbar { display: none; }
+/* its menus and messages are of the same era */
+body.rioamp .menu { padding: 2px; border: 2px solid; border-color: #fff #404040 #404040 #fff; border-radius: 0; background: #c0c0c0; color: #000; box-shadow: 2px 2px 0 rgba(0, 0, 0, .5); animation: none; }
+body.rioamp .menu button { padding: 5px 20px 5px 10px; border-radius: 0; color: #000; font: 12px Tahoma, "MS Sans Serif", Arial, sans-serif; }
+body.rioamp .menu.sheet button { padding: 11px 12px; font-size: 15px; }
+body.rioamp .menu button:hover, body.rioamp .menu button:focus-visible { background: #000080; color: #fff; }
+body.rioamp .menu button svg { display: none; }
+body.rioamp .menu .mhead { color: #404040; border-color: #808080; font: 11px Tahoma, Arial, sans-serif; }
+body.rioamp .menu hr { border-top: 1px solid #808080; border-bottom: 1px solid #fff; }
+body.rioamp .toast { border: 1px solid #000; border-radius: 0; background: #ffffe1; color: #000; font: 12px Tahoma, Arial, sans-serif; bottom: calc(var(--safe-b) + 60px); }

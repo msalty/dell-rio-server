@@ -172,6 +172,7 @@ All settings are environment variables.
 | `RIO_WATCH` | `1` | rescan as soon as files change |
 | `RIO_WATCH_POLLING` | `0` | poll for changes instead of using inotify (needed for SMB/NFS-mounted music) |
 | `RIO_CAST` | `1` | find Chromecasts and Google speakers so music can be sent to them (`0` to disable) |
+| `RIO_FFMPEG` | `ffmpeg` | the program that filters tracks for RioAmp's equaliser and balance |
 | `RIO_AIRPLAY` | `1` | offer AirPlay speakers (switched on per receiver in the web interface); `0` turns the feature off |
 | `RIO_SPOTIFY` | `1` | offer Spotify Connect speakers (switched on per receiver); `0` turns the feature off |
 | `RIO_AIRPLAY_PORT_BASE` | `5100` | first port for AirPlay speakers (16 per receiver) |
@@ -205,6 +206,30 @@ otherwise from the artist's newest album cover.
   can take it along. The move button in Now Playing and on each receiver card
   does the same: the queue and the position in the song go to the other
   player.
+- **RioAmp.** For those who miss the desktop players of the late 1990s:
+  **Settings › Player › RioAmp** turns the whole interface into one. It
+  really kicks the alpaca's butt. On a phone it fills the screen; on a
+  computer it is the size it always was (or twice that: **D**), and when
+  the web interface is installed as an app its window shrinks to fit.
+  Under the player window, in the playlist window, **Play on** chooses
+  where the music goes and **Library** what to look through: tap an artist,
+  album or song, or type in **find**. **Up Next** is the list being played.
+  Right-click or long-press a row for Play next and Add to Up Next. It
+  wears the classic skins (`.wsz`) made for the player it tips its hat to:
+  choose **Load a skin…** from its menu (**O**, or a right-click or long
+  press on the player) or drop one on it; the skin is kept in that browser.
+  The **equaliser** (ten bands, a preamp and presets) and the **balance**
+  slider belong to the player the music goes to, and work on all of them.
+  This browser shapes its own sound, so you hear a change at once. For a
+  receiver, a Chromecast, a browser receiver, and on iPhones and iPads, the
+  server filters the track (it needs `ffmpeg`, which the Docker image has)
+  and the player fetches it again from where it was: a moment's silence
+  when you let go of a slider. They are not applied to AirPlay and Spotify
+  sessions. The settings stay when you go back to the usual interface. The
+  spectrum is an animation. The time switches to time
+  remaining when clicked, <kbd>Z</kbd> <kbd>X</kbd> <kbd>C</kbd>
+  <kbd>V</kbd> <kbd>B</kbd> work as they did, and the close button or the
+  menu's **Back to RioServer NG** returns to the usual interface.
 - **Playlists** made here are stored in the data volume (the music folder
   stays read-only) and appear on the receivers too. Drag to reorder them.
   `.m3u` playlists from the music folder are listed as well, read-only.

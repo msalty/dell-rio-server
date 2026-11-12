@@ -11,7 +11,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from . import ids
+from . import eq, ids
 from .firmware import FirmwareStore
 from .players import track_state
 from .podcasts import PodcastError, make_opml, parse_opml
@@ -163,6 +163,7 @@ class WebAPI:
             web.post("/api/receivers/{id}/play", self.receiver_play),
             web.post("/api/receivers/{id}/command", self.receiver_command),
             web.post("/api/receivers/{id}/name", self.receiver_name),
+            web.post("/api/receivers/{id}/eq", self.receiver_eq),
             web.post("/api/receivers/{id}/sleep", self.receiver_sleep),
             web.get("/api/receivers/{id}/queue", self.receiver_queue),
             web.post("/api/receivers/{id}/queue", self.receiver_queue_edit),
@@ -222,6 +223,7 @@ class WebAPI:
             "last_scan": last.__dict__ if last else None,
             "last_scan_time": lib.last_scan_time,
             "boot_enabled": self.ctx.config.enable_boot,
+            "eq": self.ctx.receivers.eq.available,  # the server can filter sound (eq.py)
             "firmware": fw.choice if fw else None,
             "speakers": self.ctx.speakers.available() if self.ctx.speakers is not None else None,
             "receivers": [r.to_json() for r in self.ctx.receivers.all()],
@@ -399,10 +401,29 @@ class WebAPI:
         path = self.lib.track_path(t)
         if not path.is_file():
             raise web.HTTPNotFound()
+        # With ?eq=<settings> the track comes filtered (eq.py): browsers that
+        # can't shape the sound themselves, Chromecasts and browser receivers.
+        settings = eq.decode(req.query.get("eq"))
+        store = self.ctx.receivers.eq
+        if eq.active(settings) and store.available:
+            resp = await eq.send(req, path, t, settings, exact=True, rio_ranges=False, ffmpeg=store.ffmpeg)
+            if resp is not None:
+                return resp
+            raise web.HTTPBadGateway(text="the equaliser could not be applied to this track")
         return await send_audio(req, path, 0, t["size"], rio_ranges=False)
 
     async def receivers(self, req: web.Request) -> web.Response:
-        return web.json_response([r.to_json() for r in self.ctx.receivers.all()])
+        store = self.ctx.receivers.eq
+        return web.json_response([{**r.to_json(), "eq": store.get(r.key)} for r in self.ctx.receivers.all()])
+
+    async def receiver_eq(self, req: web.Request) -> web.Response:
+        """Set a player's equaliser and balance: {on, preamp, bands, bal}."""
+        r = self._receiver(req)
+        if isinstance(r, Receiver) and r.firmware != "ng":
+            raise web.HTTPConflict(text="This receiver needs the RioServer NG firmware for that")
+        if not self.ctx.receivers.eq.available:
+            raise web.HTTPConflict(text="The server needs ffmpeg installed for the equaliser and balance")
+        return web.json_response(self.ctx.receivers.set_eq(r, await _body(req)))
 
     def _receiver(self, req: web.Request):
         r = self.ctx.receivers.get(req.match_info["id"])

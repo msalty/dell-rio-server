@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import ids
+from .eq import EqStore
 from .playqueue import PlayQueue
 
 log = logging.getLogger(__name__)
@@ -138,8 +139,9 @@ class Receiver:
 
 
 class ReceiverRegistry:
-    def __init__(self, names_path: Path | None = None):
+    def __init__(self, names_path: Path | None = None, eq: EqStore | None = None):
         self._names_path = names_path
+        self.eq = eq or EqStore()  # each player's equaliser and balance (eq.py)
         self._names: dict[str, str] = {}
         if names_path:
             try:
@@ -208,6 +210,7 @@ class ReceiverRegistry:
         player.label = self._names.get(player.key, "")
         player.command_hook = lambda verb, p=player: bool(self.live_hook and self.live_hook(p, verb))
         player.start_position = self._start_position
+        player.stream_query = lambda p=player: self.eq.query(p.key)
         self._players[player.id] = player
 
     def _start_position(self, player_id: str, track: dict) -> int:
@@ -268,6 +271,25 @@ class ReceiverRegistry:
             except ValueError:
                 pass
         self.wake(r)
+
+    def by_ip(self, ip: str | None) -> Receiver | None:
+        """The Rio receiver at this address, if one is known (nothing is noted down)."""
+        return self._by_ip.get(ip) if ip else None
+
+    def set_eq(self, r, raw) -> dict:
+        """Change a player's equaliser and balance. What it has already
+        fetched was made with the old settings, so a player that is playing
+        fetches the track again from where it is."""
+        s = self.eq.set(r.key, raw)
+        if isinstance(r, Receiver):
+            if r.state.get("st") == "play" and r.state.get("id") and not r.live:
+                try:
+                    self.command(r, "seek", int(r.state.get("pos") or 0))
+                except ValueError:
+                    pass
+        else:
+            r.reload()
+        return s
 
     def wake(self, r: Receiver) -> None:
         if not r.wake_port:

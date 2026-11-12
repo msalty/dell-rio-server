@@ -103,9 +103,10 @@ ENV PYTHONUNBUFFERED=1 \
     RIO_DATA_DIR=/data \
     RIO_FIRMWARE_DIR=/firmware
 # lame encodes live audio (AirPlay, Spotify) to MP3 for the receivers;
-# libconfig and libpopt are shairport-sync's.
+# ffmpeg filters tracks for the equaliser and balance; libconfig and libpopt
+# are shairport-sync's.
 RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends lame libconfig11 libpopt0 \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends lame ffmpeg libconfig11 libpopt0 \
  && rm -rf /var/lib/apt/lists/*
 COPY server/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt

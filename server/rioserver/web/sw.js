@@ -2,8 +2,8 @@
 // so the app still opens when the server is briefly out of reach, fetching a
 // fresh copy whenever it can. The API, streams and artwork always go straight
 // to the server.
-const CACHE = "rio-shell-v1";
-const SHELL = ["/", "/static/app.css", "/static/app.js", "/static/manifest.json", "/static/icon-192.png"];
+const CACHE = "rio-shell-v2";
+const SHELL = ["/", "/static/app.css", "/static/app.js", "/static/rioamp.js", "/static/manifest.json", "/static/icon-192.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)));

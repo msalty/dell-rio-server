@@ -166,9 +166,8 @@ class BrowserPlayer(players.QueuePlayer):
         fut = asyncio.run_coroutine_threadsafe(ws.send_str(json.dumps(msg)), self.loop)
         fut.result(timeout=SEND_TIMEOUT)
 
-    @staticmethod
-    def _url(track: dict) -> str:
-        return f"/api/stream/{track['id']}"  # the page resolves it against the server it came from
+    def _url(self, track: dict) -> str:
+        return self.stream_path(track)  # the page resolves it against the server it came from
 
     def _device_load(self, track: dict, start_seconds: float = 0.0) -> None:
         self._device_empty = False

@@ -76,6 +76,8 @@ class Config:
     # The programs, if not the ones on PATH.
     shairport_bin: str = "shairport-sync"
     librespot_bin: str = "librespot"
+    # Filters sound for the equaliser and balance (eq.py).
+    ffmpeg_bin: str = "ffmpeg"
 
     # Seconds between checks of podcast feeds for new episodes (0 = only
     # when asked to in the web interface).
@@ -113,6 +115,7 @@ class Config:
         c.live_bitrate = _env_int("RIO_LIVE_BITRATE", c.live_bitrate)
         c.shairport_bin = os.environ.get("RIO_SHAIRPORT_SYNC", c.shairport_bin)
         c.librespot_bin = os.environ.get("RIO_LIBRESPOT", c.librespot_bin)
+        c.ffmpeg_bin = os.environ.get("RIO_FFMPEG", c.ffmpeg_bin)
         c.podcast_refresh = _env_int("RIO_PODCAST_REFRESH", c.podcast_refresh)
         c.classic_show_counts = _env_bool("RIO_CLASSIC_SHOW_COUNTS", c.classic_show_counts)
         c.log_level = os.environ.get("RIO_LOG_LEVEL", c.log_level).upper()
