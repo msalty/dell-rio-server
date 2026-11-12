@@ -148,6 +148,16 @@ def parse_range(header: str | None, size: int) -> tuple[int, int, bool] | None:
     return start, stop, partial
 
 
+def command(ffmpeg: str, path: Path, t: dict, s: dict, kbps: int, at: float) -> list[str]:
+    """The ffmpeg command that filters track `t` from `at` seconds into an MP3
+    on stdout. The image's ffmpeg is built with only what this uses (see the
+    Dockerfile), so a change here may need a component added there."""
+    return [ffmpeg, "-nostdin", "-loglevel", "error", "-ss", f"{at:.3f}", "-i", str(path), "-map", "0:a:0", "-vn",
+            "-af", filters(s, t.get("channels") or 2, t.get("sample_rate") or 44100),
+            "-c:a", "libmp3lame", "-b:a", f"{kbps}k", "-ar", str(t.get("sample_rate") or 44100),
+            "-write_xing", "0", "-id3v2_version", "0", "-f", "mp3", "pipe:1"]
+
+
 async def send(req: web.Request, path: Path, t: dict, s: dict, *, exact: bool, rio_ranges: bool,
                ffmpeg: str = "ffmpeg") -> web.StreamResponse | None:
     """Stream the track with the settings applied, honouring a Range request.
@@ -174,10 +184,7 @@ async def send(req: web.Request, path: Path, t: dict, s: dict, *, exact: bool, r
         return resp
 
     at = start / size * t["duration_ms"] / 1000
-    cmd = [ffmpeg, "-nostdin", "-loglevel", "error", "-ss", f"{at:.3f}", "-i", str(path), "-map", "0:a:0", "-vn",
-           "-af", filters(s, t.get("channels") or 2, t.get("sample_rate") or 44100),
-           "-c:a", "libmp3lame", "-b:a", f"{kbps}k", "-ar", str(t.get("sample_rate") or 44100),
-           "-write_xing", "0", "-id3v2_version", "0", "-f", "mp3", "pipe:1"]
+    cmd = command(ffmpeg, path, t, s, kbps, at)
     try:
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
                                                     stderr=asyncio.subprocess.PIPE)
