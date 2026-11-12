@@ -5,6 +5,9 @@
 #
 # Stage 1 cross-compiles the receiver firmware; stage 2 is the server.
 
+# The FFmpeg that shairport-sync is built with and the equaliser's ffmpeg.
+ARG FFMPEG_COMMIT=3a0867c2bfda4a4d4309ca1a8cbdc6175e67f587
+
 # Ubuntu 24.04 ships arm-none-eabi-gcc 13.2, the compiler the firmware is tested with.
 # The firmware runs on the receiver, not the server, so this stage always runs
 # natively on the build machine, even when building an arm64 server image.
@@ -65,7 +68,7 @@ RUN set -eu; \
 # server provides (see server/rioserver/speakers.py): no daemons needed.
 FROM --platform=$BUILDPLATFORM debian:trixie-slim AS shairport
 ARG TARGETARCH
-ARG FFMPEG_COMMIT=3a0867c2bfda4a4d4309ca1a8cbdc6175e67f587
+ARG FFMPEG_COMMIT
 ARG SHAIRPORT_COMMIT=0a34fbda83724cc06266aadcf7c88acc8fef4e7d
 RUN set -eu; \
     case "$TARGETARCH" in \
@@ -95,6 +98,40 @@ RUN set -eu; \
     mkdir -p /out; cp shairport-sync /out/; "$gnu-strip" /out/shairport-sync; \
     rm -rf /src /opt/ffmpeg
 
+# ffmpeg for the equaliser and balance (server/rioserver/eq.py): MP3 in, the
+# filters eq.filters() uses, MP3 out through libmp3lame, and nothing else.
+# Debian's ffmpeg package would add about 160 MB to the image. libmp3lame is
+# linked dynamically: the final image has it through the lame package.
+FROM --platform=$BUILDPLATFORM debian:trixie-slim AS ffmpeg
+ARG TARGETARCH
+ARG FFMPEG_COMMIT
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      amd64) gnu=x86_64-linux-gnu; arch=x86_64 ;; \
+      arm64) gnu=aarch64-linux-gnu; arch=aarch64 ;; \
+      *) echo "unsupported architecture $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    if [ "$(dpkg --print-architecture)" = "$TARGETARCH" ]; then cc="gcc"; else cc="gcc-$(echo $gnu | tr _ -)"; fi; \
+    dpkg --add-architecture "$TARGETARCH"; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates git make pkgconf binutils-$(echo $gnu | tr _ -) $cc \
+      libc6-dev:$TARGETARCH libmp3lame-dev:$TARGETARCH; \
+    rm -rf /var/lib/apt/lists/*; \
+    mkdir /src; cd /src; git init -q; \
+    git fetch -q --depth 1 https://github.com/FFmpeg/FFmpeg.git "$FFMPEG_COMMIT"; \
+    git checkout -q FETCH_HEAD; \
+    ./configure --enable-cross-compile --cross-prefix="$gnu-" --arch="$arch" --target-os=linux \
+      --disable-everything --disable-doc --disable-network --disable-autodetect --disable-x86asm \
+      --disable-ffprobe --disable-ffplay --enable-ffmpeg --enable-static --disable-shared \
+      --enable-libmp3lame --enable-swresample \
+      --enable-protocol=file,pipe --enable-demuxer=mp3 --enable-parser=mpegaudio \
+      --enable-decoder=mp3,mp3float --enable-encoder=libmp3lame --enable-muxer=mp3 \
+      --enable-filter=abuffer,abuffersink,aformat,aresample,anull,volume,equalizer,pan,alimiter; \
+    make -j"$(nproc)"; \
+    mkdir -p /out; cp ffmpeg /out/; "$gnu-strip" /out/ffmpeg; \
+    rm -rf /src
+
 FROM python:3.12-slim-trixie
 LABEL org.opencontainers.image.title="RioServer NG" \
       org.opencontainers.image.description="Music and network-boot server for the Rio Receiver and Dell Digital Audio Receiver"
@@ -102,16 +139,17 @@ ENV PYTHONUNBUFFERED=1 \
     RIO_MUSIC_DIR=/music \
     RIO_DATA_DIR=/data \
     RIO_FIRMWARE_DIR=/firmware
-# lame encodes live audio (AirPlay, Spotify) to MP3 for the receivers;
-# ffmpeg filters tracks for the equaliser and balance; libconfig and libpopt
-# are shairport-sync's.
+# lame encodes live audio (AirPlay, Spotify) to MP3 for the receivers, and
+# its libmp3lame is also the equaliser's ffmpeg's; libconfig and libpopt are
+# shairport-sync's.
 RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends lame ffmpeg libconfig11 libpopt0 \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends lame libconfig11 libpopt0 \
  && rm -rf /var/lib/apt/lists/*
 COPY server/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY --from=librespot /out/librespot /usr/local/bin/
 COPY --from=shairport /out/shairport-sync /usr/local/bin/
+COPY --from=ffmpeg /out/ffmpeg /usr/local/bin/
 COPY server/rioserver /app/rioserver
 COPY --from=firmware /out/ /firmware/
 WORKDIR /app

@@ -32,3 +32,5 @@ jobs:
         run: docker build -t rioserver-ng .
       - name: Check the AirPlay and Spotify programs run in the image
         run: docker run --rm rioserver-ng sh -c 'shairport-sync -V && librespot --version && lame --version | head -1'
+      - name: Check the equaliser's ffmpeg filters a track in the image
+        run: docker run --rm -e PYTHONPATH=/app -v "$PWD/docker:/check:ro" rioserver-ng python /check/check-ffmpeg.py
