@@ -102,6 +102,7 @@ RUN set -eu; \
 # filters eq.filters() uses, MP3 out through libmp3lame, and nothing else.
 # Debian's ffmpeg package would add about 160 MB to the image. libmp3lame is
 # linked dynamically: the final image has it through the lame package.
+# configure also needs the build machine's own gcc, for a few helper tools.
 FROM --platform=$BUILDPLATFORM debian:trixie-slim AS ffmpeg
 ARG TARGETARCH
 ARG FFMPEG_COMMIT
@@ -111,7 +112,8 @@ RUN set -eu; \
       arm64) gnu=aarch64-linux-gnu; arch=aarch64 ;; \
       *) echo "unsupported architecture $TARGETARCH" >&2; exit 1 ;; \
     esac; \
-    if [ "$(dpkg --print-architecture)" = "$TARGETARCH" ]; then cc="gcc"; else cc="gcc-$(echo $gnu | tr _ -)"; fi; \
+    cc="gcc libc6-dev"; \
+    if [ "$(dpkg --print-architecture)" != "$TARGETARCH" ]; then cc="$cc gcc-$(echo $gnu | tr _ -)"; fi; \
     dpkg --add-architecture "$TARGETARCH"; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
