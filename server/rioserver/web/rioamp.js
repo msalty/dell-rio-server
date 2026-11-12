@@ -14,9 +14,10 @@
 // the built-in skin, which is drawn by code below in RioServer's colours.
 //
 // Everything works wherever the music is playing (this browser, a receiver
-// or a speaker): it only uses what the standard player uses. That is why
-// there is no equaliser and no balance, and why the spectrum is an animation
-// and not a measurement.
+// or a speaker): it only uses what the standard player uses, and app.js's
+// Eq for the equaliser and balance, which this browser applies itself and
+// the server applies for the others. That is also why the spectrum is an
+// animation and not a measurement.
 //
 // Loaded by app.js only when RioAmp is switched on in Settings.
 "use strict";
@@ -24,7 +25,7 @@
 window.RioAmp = (() => {
   const W = 275, H = 116;
   const SHEETS = ["main", "titlebar", "cbuttons", "numbers", "nums_ex", "text", "posbar", "volume", "balance",
-    "shufrep", "playpaus", "monoster", "pledit"];
+    "shufrep", "playpaus", "monoster", "pledit", "eqmain"];
 
   // ------------------------------------------------------------ reading a skin (.wsz is a zip)
 
@@ -243,6 +244,12 @@ window.RioAmp = (() => {
     } catch { /* the defaults */ }
     skin.ink = ink;
     skin.paper = paper;
+    // the equaliser's curve: a colour for each height
+    skin.eqLine = Array.from({ length: 19 }, () => ink);
+    try {
+      const d = skin.sheets.eqmain.getContext("2d").getImageData(115, 294, 1, 19).data;
+      skin.eqLine = skin.eqLine.map((_, i) => `rgb(${d[i * 4]},${d[i * 4 + 1]},${d[i * 4 + 2]})`);
+    } catch { /* the lettering's colour */ }
     return skin;
   }
 
@@ -551,6 +558,54 @@ window.RioAmp = (() => {
       sheets.pledit = c;
     }
 
+    // The equaliser window: its face, the 28 pictures of a slider's slot,
+    // the handle, the title bar (focused, then not) and the buttons.
+    {
+      const [c, g] = make(W, 315);
+      rect(g, 0, 0, W, 116, C.edge);
+      raised(g, 1, 1, W - 2, 114);
+      sunk(g, 85, 16, 115, 21);
+      word(g, "+12db", 44, 39, C.label); word(g, "+0db", 49, 67, C.label); word(g, "-12db", 44, 95, C.label);
+      word(g, "preamp", 13, 106, C.label);
+      ["60", "170", "310", "600", "1k", "3k", "6k", "12k", "14k", "16k"].forEach((n, i) =>
+        word(g, n, 78 + 18 * i + 7 - Math.floor((n.length * 5) / 2), 106, C.label));
+      for (const [y, ink, line] of [[134, C.ink, C.dim], [149, C.label, C.off]]) {
+        rect(g, 0, y, W, 14, C.edge);
+        raised(g, 1, y + 1, W - 2, 13, "#222e35");
+        word(g, "equalizer", 115, y + 4, ink);
+        for (const ly of [5, 7, 9]) { rect(g, 20, y + ly, 89, 1, line); rect(g, 166, y + ly, 92, 1, line); }
+      }
+      const cross = [[2, 2], [6, 2], [3, 3], [5, 3], [4, 4], [3, 5], [5, 5], [2, 6], [6, 6]];
+      for (const [y, down] of [[116, false], [125, true]]) {
+        raised(g, 0, y, 9, 9, down ? "#141b1f" : "#26333a", down ? C.lo : C.hi, down ? C.hi : C.lo);
+        for (const [cx, cy] of cross) rect(g, cx, y + cy, 1, 1, down ? C.ink : C.label);
+      }
+      const key = (x, y, w, label, on, down, lamp) => {
+        raised(g, x, y, w, 12, down ? "#141b1f" : "#26333a", down ? C.lo : C.hi, down ? C.hi : C.lo);
+        const o = down ? 1 : 0;
+        if (lamp) rect(g, x + 4 + o, y + 5 + o, 3, 3, on ? C.ink : C.lo);
+        word(g, label, x + (lamp ? 11 : 5) + o, y + 3 + o, on ? C.ink : C.label);
+      };
+      key(10, 119, 26, "on", false, false, true); key(128, 119, 26, "on", false, true, true);
+      key(69, 119, 26, "on", true, false, true); key(187, 119, 26, "on", true, true, true);
+      key(224, 164, 44, "presets", false, false); key(224, 176, 44, "presets", false, true);
+      for (let n = 0; n < 28; n++) {
+        const x = 13 + 15 * (n % 14), y = 164 + 65 * Math.floor(n / 14);
+        sunk(g, x + 4, y, 6, 63);
+        const level = 6 + Math.round((1 - n / 27) * 50);
+        rect(g, x + 5, y + Math.min(level, 31), 4, Math.abs(31 - level) + 1, n > 13 ? C.ink : C.dim);
+      }
+      for (const [y, down] of [[164, false], [176, true]]) {
+        raised(g, 0, y, 11, 11, down ? "#141b1f" : "#2c3b43", down ? C.lo : C.hi, down ? C.hi : C.lo);
+        rect(g, 2, y + 5, 7, 1, C.ink);
+      }
+      rect(g, 0, 294, 113, 19, C.lcd);
+      rect(g, 0, 303, 113, 1, "#12202a");
+      for (let y = 0; y < 19; y++) rect(g, 115, 294 + y, 1, 1, Math.abs(y - 9) > 5 ? C.white : C.ink);
+      rect(g, 0, 314, 113, 1, C.dim);
+      sheets.eqmain = c;
+    }
+
     const blend = (a, b, t) => `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * t)).join(",")})`;
     const vis = [C.lcd, "#0d1619"];
     for (let i = 0; i < 16; i++) {
@@ -596,6 +651,7 @@ window.RioAmp = (() => {
   const state = {
     on: false, skin: null, desk: null, room: null, stack: null,
     el: null, base: null, // the main window on screen, and its 275x116 picture
+    eq: null,             // the equaliser window: {el, base}
     list: null,           // the list window's parts
     scale: 1,
     press: null,          // {id, inside}: the button under a held pointer
@@ -604,6 +660,7 @@ window.RioAmp = (() => {
     remaining: store("rio.rioamp.remaining") === "1",
     double: store("rio.rioamp.double") !== "0",
     listShown: store("rio.rioamp.list") !== "0",
+    eqShown: store("rio.rioamp.eq") !== "0",
     nav: [], rows: [], loadSeq: 0, queueKey: "", queueMs: 0, targetKey: "", menuRow: null,
     title: "", scroll: 0, scrollAt: 0, overlay: null,
     bars: new Float32Array(19), peaks: new Float32Array(19), visAt: 0,
@@ -615,14 +672,14 @@ window.RioAmp = (() => {
     menu: [6, 3, 9, 9], close: [264, 3, 9, 9],
     prev: [16, 88, 23, 18], play: [39, 88, 23, 18], pause: [62, 88, 23, 18], stop: [85, 88, 23, 18],
     next: [108, 88, 22, 18], eject: [136, 89, 22, 16],
-    shuffle: [164, 89, 47, 15], repeat: [210, 89, 28, 15], pl: [242, 58, 23, 12],
-    vol: [107, 57, 68, 13], pos: [16, 72, 248, 10],
+    shuffle: [164, 89, 47, 15], repeat: [210, 89, 28, 15], eq: [219, 58, 23, 12], pl: [242, 58, 23, 12],
+    vol: [107, 57, 68, 13], bal: [177, 57, 38, 13], pos: [16, 72, 248, 10],
     time: [36, 26, 63, 13], vis: [24, 43, 76, 16],
     clutO: [10, 24, 8, 8], clutD: [10, 48, 8, 8], logo: [253, 91, 13, 15],
   };
   const ROOMY = { menu: 3, close: 3 }; // small targets get more room for fingers
-  const ORDER = ["menu", "close", "prev", "play", "pause", "stop", "next", "eject", "shuffle", "repeat", "pl",
-    "vol", "pos", "time", "clutO", "clutD", "logo"];
+  const ORDER = ["menu", "close", "prev", "play", "pause", "stop", "next", "eject", "shuffle", "repeat", "eq", "pl",
+    "vol", "bal", "pos", "time", "clutO", "clutD", "logo"];
 
   function hit(x, y) {
     for (const id of ORDER) {
@@ -738,6 +795,12 @@ window.RioAmp = (() => {
       title = `Seek to: ${fmtTime(shownPos)}/${fmtTime(s.dur)} (${Math.round(state.drag.v * 100)}%)`;
     } else if (state.drag && state.drag.id === "vol") {
       title = `Volume: ${Math.round(state.drag.v * 100)}%`;
+    } else if (state.drag && state.drag.id === "bal") {
+      const b = balanceOf(state.drag.v);
+      title = `Balance: ${b ? `${Math.round(Math.abs(b) * 100)}% ${b < 0 ? "left" : "right"}` : "center"}`;
+    } else if (state.drag && state.drag.id === "eq") {
+      const i = state.drag.i, db = i ? state.drag.s.bands[i - 1] : state.drag.s.preamp;
+      title = `EQ: ${i ? EQ_NAMES[i - 1] : "preamp"}: ${db > 0 ? "+" : ""}${db.toFixed(1)} db`;
     }
     if (title !== state.title) { state.title = title; state.scroll = 0; state.scrollAt = now + 1200; }
     state.overlay = drawTitle(g, sh, plain(title), now);
@@ -747,15 +810,20 @@ window.RioAmp = (() => {
     spr(sh.monoster, 29, 12, 27, 12, 212, 41);
     spr(sh.monoster, 0, s.has && s.status !== "stop" ? 0 : 12, 29, 12, 239, 41);
 
-    // volume, and the balance in the middle where it stays
+    // volume and balance
     const vol = state.drag && state.drag.id === "vol" ? state.drag.v : volume();
     spr(sh.volume, 0, Math.round(vol * 27) * 15, 68, 13, 107, 57);
     spr(sh.volume, state.drag && state.drag.id === "vol" ? 0 : 15, 422, 14, 11, 107 + Math.round(vol * 51), 58);
-    if (sh.balance.volumeAsBalance) spr(sh.balance.img, 0, 0, 38, 13, 177, 57);
-    else spr(sh.balance, 9, 0, 38, 13, 177, 57);
-    spr(sh.balance.volumeAsBalance ? sh.balance.img : sh.balance, 15, 422, 14, 11, 177 + 12, 58);
+    const settings = Eq.get();
+    const balDrag = state.drag && state.drag.id === "bal";
+    const bal = balDrag ? balanceOf(state.drag.v) : settings.bal;
+    const lean = Math.round(Math.abs(bal) * 27) * 15;
+    if (sh.balance.volumeAsBalance) spr(sh.balance.img, 0, lean, 38, 13, 177, 57);
+    else spr(sh.balance, 9, lean, 38, 13, 177, 57);
+    spr(sh.balance.volumeAsBalance ? sh.balance.img : sh.balance, balDrag ? 0 : 15, 422, 14, 11,
+      177 + Math.round(((bal + 1) / 2) * 24), 58);
 
-    spr(sh.shufrep, 0, 61, 23, 12, 219, 58);
+    spr(sh.shufrep, down("eq") ? 46 : 0, state.eqShown ? 73 : 61, 23, 12, 219, 58);
     spr(sh.shufrep, down("pl") ? 69 : 23, state.listShown ? 73 : 61, 23, 12, 242, 58);
 
     // the seek bar; no handle when there is nothing to seek in
@@ -772,6 +840,7 @@ window.RioAmp = (() => {
     spr(sh.shufrep, 0, (s.ns.repeat !== "off" ? 30 : 0) + (down("repeat") ? 15 : 0), 28, 15, 210, 89);
 
     drawOverlay(present(state.el, base));
+    drawEq(settings);
     drawBars(s, shownPos);
     return s;
   }
@@ -851,6 +920,116 @@ window.RioAmp = (() => {
         g.fillRect(X + i * 4, Y + 16 - pk, 3, 1);
       }
     }
+  }
+
+  // The equaliser window. Value 0..1 of a slider: -12 dB at the bottom, +12 at the top.
+  const EQ_NAMES = ["60 hz", "170 hz", "310 hz", "600 hz", "1 khz", "3 khz", "6 khz", "12 khz", "14 khz", "16 khz"];
+  const EQ_X = [21, 78, 96, 114, 132, 150, 168, 186, 204, 222, 240]; // the preamp, then the ten bands
+  const PRESETS = [
+    ["Flat", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]], ["Rock", [5, 3, -3, -5, -2, 2, 5, 7, 7, 7]], ["Pop", [-1, 3, 4, 5, 3, 0, -1, -1, -1, -1]],
+    ["Dance", [6, 4, 1, 0, 0, -3, -4, -4, 0, 0]], ["Classical", [0, 0, 0, 0, 0, 0, -4, -4, -4, -6]],
+    ["Live", [-3, 0, 2, 3, 3, 3, 2, 1, 1, 1]], ["Full bass", [6, 6, 6, 4, 1, -2, -5, -6, -6, -6]],
+    ["Full treble", [-6, -6, -6, -2, 2, 6, 10, 10, 10, 10]], ["Bass and treble", [5, 4, 0, -4, -3, 1, 5, 7, 8, 8]],
+    ["Spoken word", [-4, -1, 2, 4, 4, 3, 1, -1, -3, -5]],
+  ];
+  function drawEq(e) {
+    const Q = state.eq;
+    if (!Q || !state.eqShown) return;
+    const q = state.skin.sheets.eqmain;
+    const g = Q.base.getContext("2d");
+    const down = (id) => !!state.press && state.press.id === `eq:${id}` && state.press.inside;
+    if (state.drag && state.drag.id === "eq") e = state.drag.s;
+    g.clearRect(0, 0, W, H);
+    put(g, q, 0, 0, W, H, 0, 0);
+    put(g, q, 0, document.hasFocus() ? 134 : 149, W, 14, 0, 0);
+    put(g, q, 0, down("close") ? 125 : 116, 9, 9, 264, 3);
+    put(g, q, e.on ? (down("on") ? 187 : 69) : (down("on") ? 128 : 10), 119, 26, 12, 14, 18);
+    put(g, q, 36, 119, 32, 12, 40, 18);
+    put(g, q, 224, down("presets") ? 176 : 164, 44, 12, 217, 18);
+    // the curve
+    put(g, q, 0, 294, 113, 19, 86, 17);
+    put(g, q, 0, 314, 113, 1, 86, 17 + Math.round((1 - (e.preamp + 12) / 24) * 18));
+    let last = null;
+    for (let x = 0; x < 113; x++) {
+      const at = (x / 112) * 9, i = Math.min(8, Math.floor(at)), f = (1 - Math.cos((at - i) * Math.PI)) / 2;
+      const db = e.bands[i] + (e.bands[i + 1] - e.bands[i]) * f;
+      const y = Math.round((1 - (db + 12) / 24) * 18);
+      const from = last === null ? y : Math.min(last, y), to = last === null ? y : Math.max(last, y);
+      for (let yy = from; yy <= to; yy++) {
+        g.fillStyle = state.skin.eqLine[yy];
+        g.fillRect(86 + x, 17 + yy, 1, 1);
+      }
+      last = y;
+    }
+    // the sliders
+    [e.preamp, ...e.bands].forEach((db, i) => {
+      const v = (db + 12) / 24, n = Math.round(v * 27);
+      put(g, q, 13 + 15 * (n % 14), 164 + 65 * Math.floor(n / 14), 14, 63, EQ_X[i], 38);
+      const held = state.drag && state.drag.id === "eq" && state.drag.i === i;
+      put(g, q, 0, held ? 176 : 164, 11, 11, EQ_X[i] + 1, 39 + Math.round((1 - v) * 50));
+    });
+    present(Q.el, Q.base);
+  }
+  function eqHit(x, y) {
+    if (y >= 36 && y < 104) {
+      const i = EQ_X.findIndex((sx) => x >= sx - 2 && x < sx + 16);
+      if (i >= 0) return `s${i}`;
+    }
+    if (x >= 14 && x < 40 && y >= 16 && y < 32) return "on";
+    if (x >= 217 && x < 261 && y >= 16 && y < 32) return "presets";
+    if (x >= 259 && y < 15) return "close";
+    return null;
+  }
+  // The decibels a slider's handle is at; it settles on 0 when close to it.
+  function eqDb(y) {
+    const db = (1 - clamp((y - 44) / 50)) * 24 - 12;
+    return Math.abs(db) < 0.7 ? 0 : Math.round(db * 10) / 10;
+  }
+  function eqWith(i, db) {
+    const e = Eq.get();
+    const s = { ...e, bands: e.bands.slice() };
+    if (i) s.bands[i - 1] = db; else s.preamp = db;
+    return s;
+  }
+  function onEqDown(e) {
+    if (e.button) return;
+    const [x, y] = point(e, state.eq.el);
+    const id = eqHit(x, y);
+    if (!id) return;
+    state.eq.el.setPointerCapture(e.pointerId);
+    if (id[0] === "s") {
+      const i = Number(id.slice(1));
+      state.drag = { id: "eq", i, s: eqWith(i, eqDb(y)) };
+      Eq.set(state.drag.s, { live: true });
+    } else {
+      state.press = { id: `eq:${id}`, inside: true };
+    }
+    tick();
+  }
+  function onEqMove(e) {
+    const [x, y] = point(e, state.eq.el);
+    if (state.drag && state.drag.id === "eq") {
+      state.drag.s = eqWith(state.drag.i, eqDb(y));
+      Eq.set(state.drag.s, { live: true });
+      draw();
+    } else if (state.press && state.press.id.startsWith("eq:")) {
+      const inside = `eq:${eqHit(x, y)}` === state.press.id;
+      if (inside !== state.press.inside) { state.press.inside = inside; draw(); }
+    }
+  }
+  function onEqUp(e) {
+    const drag = state.drag, press = state.press;
+    state.drag = state.press = null;
+    if (drag && drag.id === "eq") Eq.set(drag.s); // now a receiver hears it too
+    if (press && press.inside && e.type === "pointerup") {
+      const id = press.id.slice(3), at = { x: e.clientX, y: e.clientY };
+      if (id === "on") Eq.set({ ...Eq.get(), on: !Eq.get().on });
+      else if (id === "close") toggleEq();
+      else if (id === "presets") {
+        showMenu(at, PRESETS.map(([label, bands]) => ({ label, run: () => Eq.set({ ...Eq.get(), on: true, bands }) })), "Presets");
+      }
+    }
+    tick();
   }
 
   // The list window's title bar and bottom bar (the classic playlist frame).
@@ -1102,14 +1281,15 @@ window.RioAmp = (() => {
     if (!state.on) return;
     const touch = coarse();
     const rw = state.room.clientWidth, rh = state.room.clientHeight;
-    const full = state.listShown ? H + LIST_H : H;
+    const fixed = state.eqShown ? H * 2 : H; // the player, and the equaliser under it
+    const full = state.listShown ? fixed + LIST_H : fixed;
     let k, hn;
     if (touch) {
-      k = Math.min(rw / W, 2.5, state.listShown ? rh / (H + 140) : rh / H);
-      hn = state.listShown ? rh / k : H;
+      k = Math.min(rw / W, 2.5, rh / (state.listShown ? fixed + 140 : fixed));
+      hn = state.listShown ? rh / k : fixed;
     } else {
       k = Math.max(0.5, Math.min(state.double ? 2 : 1, rw / W));
-      hn = state.listShown ? Math.max(H + 100, Math.min(full, rh / k)) : H;
+      hn = state.listShown ? Math.max(fixed + 100, Math.min(full, rh / k)) : fixed;
       if (fit === true) fitWindow(W * k, full * k);
     }
     state.scale = k;
@@ -1127,6 +1307,8 @@ window.RioAmp = (() => {
       if (el.width !== bw || el.height !== bh) { el.width = bw; el.height = bh; }
     };
     size(state.el, H);
+    size(state.eq.el, H);
+    state.eq.el.hidden = !state.eqShown;
     size(state.list.top, 20);
     size(state.list.bot, 38);
     state.list.el.hidden = !state.listShown;
@@ -1173,6 +1355,7 @@ window.RioAmp = (() => {
       { label: "Load a skin…", icon: "download", run: chooseSkin },
       state.skin && state.skin.name ? { label: "Back to the RioAmp skin", icon: "refresh", run: useSkin } : null,
       coarse() ? null : { label: state.double ? "Normal size" : "Double size", icon: "monitor", run: toggleDouble },
+      { label: state.eqShown ? "Hide the equaliser" : "Show the equaliser", icon: "list", run: toggleEq },
       { label: state.listShown ? "Hide the list" : "Show the list", icon: "list", run: toggleList },
       "-",
       { label: "Back to RioServer NG", icon: "x", run: () => Skinned.set(false) },
@@ -1181,6 +1364,11 @@ window.RioAmp = (() => {
   function toggleDouble() {
     state.double = !state.double;
     store("rio.rioamp.double", state.double ? null : "0");
+    layout(true);
+  }
+  function toggleEq() {
+    state.eqShown = !state.eqShown;
+    store("rio.rioamp.eq", state.eqShown ? null : "0");
     layout(true);
   }
   function toggleList() {
@@ -1205,6 +1393,7 @@ window.RioAmp = (() => {
       eject: () => open("artists"),
       shuffle: () => { if (!live) toggleShuffle(); },
       repeat: () => { if (!live) cycleRepeat(); },
+      eq: toggleEq,
       pl: toggleList,
       time: () => {
         state.remaining = !state.remaining;
@@ -1219,11 +1408,17 @@ window.RioAmp = (() => {
     if (actions[id]) actions[id]();
   }
 
-  function point(e) {
-    const b = state.el.getBoundingClientRect();
+  function point(e, el = state.el) {
+    const b = el.getBoundingClientRect();
     return [((e.clientX - b.left) / b.width) * W, ((e.clientY - b.top) / b.height) * H];
   }
-  const slide = { vol: (x) => clamp((x - 107 - 7) / 51), pos: (x) => clamp((x - 16 - 14) / 219) };
+  const slide = { vol: (x) => clamp((x - 107 - 7) / 51), bal: (x) => clamp((x - 177 - 7) / 24), pos: (x) => clamp((x - 16 - 14) / 219) };
+  // The balance a handle position stands for; it settles in the middle when close to it.
+  function balanceOf(v) {
+    const b = v * 2 - 1;
+    return Math.abs(b) < 0.15 ? 0 : Math.round(b * 100) / 100;
+  }
+  const applyBalance = (live) => Eq.set({ ...Eq.get(), bal: balanceOf(state.drag.v) }, { live });
 
   function onDown(e) {
     if (e.button) return;
@@ -1231,11 +1426,12 @@ window.RioAmp = (() => {
     const id = hit(x, y);
     if (!id) return;
     state.el.setPointerCapture(e.pointerId);
-    if (id === "vol" || id === "pos") {
+    if (id === "vol" || id === "pos" || id === "bal") {
       const s = snapshot();
       if (id === "pos" && !(s.t && s.dur > 0)) return;
       state.drag = { id, v: slide[id](x) };
       if (id === "vol") { $("#volume")._held = true; applyVolume(); }
+      if (id === "bal") applyBalance(true);
     } else {
       state.press = { id, inside: true };
     }
@@ -1246,6 +1442,7 @@ window.RioAmp = (() => {
     if (state.drag) {
       state.drag.v = slide[state.drag.id](x);
       if (state.drag.id === "vol") applyVolume();
+      if (state.drag.id === "bal") applyBalance(true);
       draw();
     } else if (state.press) {
       const inside = hit(x, y) === state.press.id;
@@ -1254,6 +1451,7 @@ window.RioAmp = (() => {
   }
   function onUp(e) {
     const drag = state.drag, press = state.press;
+    if (drag && drag.id === "bal") applyBalance(false); // now a receiver hears it too
     state.drag = state.press = null;
     if (drag && drag.id === "pos" && e.type === "pointerup") {
       state.hold = { v: drag.v, until: performance.now() + (Player.target ? 1500 : 300) };
@@ -1358,8 +1556,13 @@ window.RioAmp = (() => {
     el.addEventListener("pointercancel", onUp);
     el.addEventListener("wheel", (e) => { e.preventDefault(); nudgeVolume(e.deltaY < 0 ? 5 : -5); draw(); }, { passive: false });
     bindContext(el, menuItems, () => "RioAmp");
+    state.eq = { base: canvas(W, H), el: h("canvas", { class: "rioamp-eq", role: "img", "aria-label": "Equaliser" }) };
+    state.eq.el.addEventListener("pointerdown", onEqDown);
+    state.eq.el.addEventListener("pointermove", onEqMove);
+    state.eq.el.addEventListener("pointerup", onEqUp);
+    state.eq.el.addEventListener("pointercancel", onEqUp);
     state.list = buildList();
-    state.stack = h("div", { class: "rioamp-stack" }, el, state.list.el);
+    state.stack = h("div", { class: "rioamp-stack" }, el, state.eq.el, state.list.el);
     state.room = h("div", { class: "rioamp-room" }, state.stack);
     state.desk = h("div", { class: "rioamp-desk" }, state.room);
     state.desk.addEventListener("dragover", (e) => e.preventDefault());
@@ -1389,7 +1592,7 @@ window.RioAmp = (() => {
     clearTimeout(state.timer);
     Queue.listeners.delete(queueChanged);
     state.desk.remove();
-    state.desk = state.room = state.stack = state.el = state.base = state.list = null;
+    state.desk = state.room = state.stack = state.el = state.base = state.eq = state.list = null;
     state.press = state.drag = null;
     document.body.classList.remove("rioamp");
     document.title = state.was || document.title;

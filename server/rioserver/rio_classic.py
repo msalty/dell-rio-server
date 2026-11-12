@@ -31,7 +31,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from . import ids
+from . import eq, ids
 from .ids import device_bytes
 from .library import compile_prefix
 
@@ -340,6 +340,15 @@ class ClassicProtocol:
         t = self.lib.track(oid)
         if not t:
             raise web.HTTPNotFound()
+        # A receiver whose equaliser or balance is set gets the track filtered
+        # (eq.py); it can be told so only by the NG firmware's web interface.
+        reg = self.ctx.receivers
+        r = reg.by_ip(req.remote)
+        if r is not None and r.firmware == "ng" and eq.active(reg.eq.get(r.key)) and reg.eq.available:
+            resp = await eq.send(req, self.lib.track_path(t), t, reg.eq.get(r.key), exact=False, rio_ranges=True,
+                                 ffmpeg=reg.eq.ffmpeg)
+            if resp is not None:
+                return resp
         return await send_audio(req, self.lib.track_path(t), t["data_offset"], track_size(t))
 
     async def favourites(self, req: web.Request) -> web.Response:

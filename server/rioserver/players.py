@@ -91,6 +91,9 @@ class QueuePlayer:
         # Set by the registry: sees commands first, so they can end a live
         # session; returns True if the command is dealt with.
         self.command_hook: Callable[[str], bool] | None = None
+        # Set by the registry: what to add to a track's stream URL so that it
+        # comes with this player's equaliser and balance (eq.py), or "".
+        self.stream_query: Callable[[], str] | None = None
 
     @property
     def key(self) -> str:
@@ -116,6 +119,18 @@ class QueuePlayer:
     @property
     def current(self) -> dict | None:
         return self.pq.current
+
+    def stream_path(self, track: dict) -> str:
+        """The server path this player fetches a track from."""
+        return f"/api/stream/{track['id']}{self.stream_query() if self.stream_query else ''}"
+
+    def reload(self) -> None:
+        """Fetch the playing track again from where it is (its sound changed)."""
+        with self._lock:
+            if self._st not in ("play", "buffer") or not self.current or self.live or self._other_app:
+                return
+            index, pos = self.index, self.position_ms()
+        self._submit(self._start, index, pos)
 
     def position_ms(self) -> int:
         pos = self._pos_ms

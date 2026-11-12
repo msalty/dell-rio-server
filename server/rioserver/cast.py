@@ -31,7 +31,7 @@ APP_BACKDROP = "E8C28D3C"  # the idle screen / ambient mode, i.e. nothing runnin
 LAUNCH_GRACE = 15.0  # seconds during which another app's status is from before our launch
 STATES = {"PLAYING": "play", "BUFFERING": "buffer", "PAUSED": "pause", "IDLE": "stop"}
 PRELOAD_SECONDS = 20  # how long before the end of a track the device starts fetching the next
-_STREAM_RE = re.compile(r"/api/stream/(\d+)$")
+_STREAM_RE = re.compile(r"/api/stream/(\d+)(?:\?.*)?$")
 
 
 def _track_id(content_id: str | None, base: str) -> int | None:
@@ -129,7 +129,7 @@ class CastPlayer(players.QueuePlayer):
 
     def _media(self, track: dict) -> dict:
         base = self.base
-        return {"contentId": f"{base}/api/stream/{track['id']}", "streamType": "BUFFERED",
+        return {"contentId": f"{base}{self.stream_path(track)}", "streamType": "BUFFERED",
                 "contentType": "audio/mpeg", "metadata": track_metadata(track, base)}
 
     # -- live streams (AirPlay, Spotify; see speakers.py) ---------------------
@@ -172,7 +172,7 @@ class CastPlayer(players.QueuePlayer):
         base = self.base
         self._launched_at = time.monotonic()
         self._dmr.play_media(
-            f"{base}/api/stream/{track['id']}", "audio/mpeg",
+            f"{base}{self.stream_path(track)}", "audio/mpeg",
             stream_type="BUFFERED", metadata=track_metadata(track, base),
             current_time=start_seconds or None)
 

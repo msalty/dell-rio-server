@@ -9,6 +9,7 @@ from pathlib import Path
 
 from aiohttp import web
 
+from .eq import EqStore
 from .alarms import AlarmClock
 from .cast import CastDiscovery
 from .config import Config
@@ -112,7 +113,7 @@ async def start_boot_services(ctx: Context) -> list:
 async def run(cfg: Config) -> None:
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     library = Library(cfg.music_dir, cfg.data_dir / "library.db")
-    ctx = Context(cfg, library, ReceiverRegistry(cfg.data_dir / "receivers.json"))
+    ctx = Context(cfg, library, ReceiverRegistry(cfg.data_dir / "receivers.json", EqStore(cfg.data_dir / "eq.json", cfg.ffmpeg_bin)))
     ctx.watcher = LibraryWatcher(library, cfg.rescan_interval, cfg.watch, cfg.watch_polling)
     ctx.watcher.start()
     ctx.podcasts = Podcasts(library, cfg.data_dir, cfg.podcast_refresh)

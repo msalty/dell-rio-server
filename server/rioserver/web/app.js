@@ -340,7 +340,7 @@ const Player = {
     this.index = i;
     const t = this.current;
     if (!t) return;
-    audio.src = `/api/stream/${t.id}`;
+    audio.src = Eq.streamUrl(t);
     // Podcast episodes carry on where any device left them.
     let at = startMs || 0;
     if (!startMs && t.podcast_id) {
@@ -466,6 +466,119 @@ audio.addEventListener("timeupdate", () => {
 window.addEventListener("pagehide", () => { if (!audio.paused) reportProgress("pause"); });
 audio.volume = Number(store("rio.volume") || 80) / 100;
 $("#volume").value = Math.round(audio.volume * 100);
+
+// ---------------------------------------------------------------- equaliser and balance
+
+// Each player has its own settings: {on, preamp, bands, bal}, decibels from
+// -12 to 12 and a balance from -1 (left) to 1 (right). The balance applies
+// whether the equaliser is on or not.
+//
+// This browser shapes its own sound as it plays, so a change is heard at
+// once. Receivers and speakers can't: for them the server filters the track
+// (eq.py) and the player fetches it again from where it was, which is a
+// moment's silence. iPhones and iPads go the server's way too, because
+// sound routed through the page stops there when the screen locks.
+const EQ_BANDS = [60, 170, 310, 600, 1000, 3000, 6000, 12000, 14000, 16000];
+const EQ_WIDTHS = [1, 1, 1, 1, 1, 1, 1.2, 2.5, 4, 4]; // each band's Q, as in eq.py
+const Eq = {
+  flat: () => ({ on: false, preamp: 0, bands: EQ_BANDS.map(() => 0), bal: 0 }),
+  clean(raw) {
+    const num = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v) || 0));
+    const r = raw && typeof raw === "object" ? raw : {};
+    return { on: !!r.on, preamp: num(r.preamp, -12, 12), bal: num(r.bal, -1, 1),
+      bands: EQ_BANDS.map((_, i) => num(Array.isArray(r.bands) ? r.bands[i] : 0, -12, 12)) };
+  },
+  active: (s) => s.bal !== 0 || (s.on && (s.preamp !== 0 || s.bands.some(Boolean))),
+  // as eq.py reads it from a stream's URL
+  param: (s) => [s.on ? 1 : 0, Math.round(s.preamp * 10), ...s.bands.map((b) => Math.round(b * 10)), Math.round(s.bal * 100)].join(","),
+  viaServer: /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+    || !(window.AudioContext || window.webkitAudioContext),
+  local: null,
+  sent: null,   // {id, s, until}: what a receiver was just asked for, shown until it reports it
+  graph: null,  // this browser's filters, once they have been needed
+
+  // The settings of the player Music goes to.
+  get() {
+    if (!Player.target) return this.local;
+    if (this.sent && this.sent.id === Player.target && Date.now() < this.sent.until) return this.sent.s;
+    const r = Player.receiver;
+    return this.clean(r && r.eq);
+  },
+  // While a slider is being dragged (live) only this browser follows along;
+  // a receiver gets the setting when the slider is let go.
+  set(raw, { live = false } = {}) {
+    const s = this.clean(raw);
+    if (Player.target) {
+      const id = Player.target;
+      this.sent = { id, s, until: Date.now() + (live ? 60000 : 4000) };
+      if (!live) post(`/api/receivers/${id}/eq`, s).then(() => pollReceivers()).catch((e) => { this.sent = null; fail(e); });
+      return;
+    }
+    this.local = s;
+    store("rio.eq", JSON.stringify(s));
+    if (!this.viaServer) this.apply();
+    else if (!live) this.refetch();
+  },
+  streamUrl(t) {
+    return `/api/stream/${t.id}${this.viaServer && this.active(this.local) ? `?eq=${this.param(this.local)}` : ""}`;
+  },
+  // The server's way: the same track again, filtered, from where it was.
+  refetch() {
+    const t = Player.current;
+    if (!t || Player.target) return;
+    const url = this.streamUrl(t);
+    if (audio.getAttribute("src") === url) return;
+    const at = audio.currentTime, playing = !audio.paused;
+    audio.src = url;
+    if (at) audio.addEventListener("loadedmetadata", () => { audio.currentTime = at; }, { once: true });
+    if (playing) audio.play().catch(() => {});
+  },
+  // This browser's way: filters between the player and the speakers. They
+  // are made the first time they are needed and stay from then on.
+  apply() {
+    const s = this.local;
+    if (!this.graph) {
+      if (!this.active(s)) return;
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const pre = ctx.createGain();
+        pre.channelCount = 2;
+        pre.channelCountMode = "explicit"; // a mono track gets a left and a right to balance
+        const bands = EQ_BANDS.map((f, i) => {
+          const b = ctx.createBiquadFilter();
+          b.type = "peaking";
+          b.frequency.value = Math.min(f, ctx.sampleRate * 0.45);
+          b.Q.value = EQ_WIDTHS[i];
+          return b;
+        });
+        const split = ctx.createChannelSplitter(2), merge = ctx.createChannelMerger(2);
+        const left = ctx.createGain(), right = ctx.createGain();
+        // loud boosts are held back instead of crackling
+        const limit = ctx.createDynamicsCompressor();
+        limit.threshold.value = -1; limit.knee.value = 0; limit.ratio.value = 20; limit.attack.value = 0.002; limit.release.value = 0.1;
+        [ctx.createMediaElementSource(audio), pre, ...bands, split].reduce((a, b) => (a.connect(b), b));
+        split.connect(left, 0); split.connect(right, 1);
+        left.connect(merge, 0, 0); right.connect(merge, 0, 1);
+        merge.connect(limit); limit.connect(ctx.destination);
+        this.graph = { ctx, pre, bands, left, right };
+      } catch (e) {
+        this.viaServer = true; // this browser can't after all
+        this.refetch();
+        return;
+      }
+    }
+    const g = this.graph, now = g.ctx.currentTime;
+    const to = (param, v) => param.setTargetAtTime(v, now, 0.015);
+    to(g.pre.gain, s.on ? Math.pow(10, s.preamp / 20) : 1);
+    g.bands.forEach((b, i) => to(b.gain, s.on ? s.bands[i] : 0));
+    to(g.left.gain, 1 - Math.max(0, s.bal));
+    to(g.right.gain, 1 + Math.min(0, s.bal));
+    if (g.ctx.state !== "running") g.ctx.resume().catch(() => {});
+  },
+};
+Eq.local = Eq.clean((() => { try { return JSON.parse(store("rio.eq") || "null"); } catch { return null; } })());
+// Sound only comes out of the filters once the page may make sound: when something starts playing.
+audio.addEventListener("play", () => { if (!Eq.viaServer) Eq.apply(); });
 
 // ---------------------------------------------------------------- RioAmp
 
