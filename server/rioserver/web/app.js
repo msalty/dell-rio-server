@@ -467,6 +467,40 @@ window.addEventListener("pagehide", () => { if (!audio.paused) reportProgress("p
 audio.volume = Number(store("rio.volume") || 80) / 100;
 $("#volume").value = Math.round(audio.volume * 100);
 
+// ---------------------------------------------------------------- RioAmp
+
+// The player bar as a 1990s desktop player, for those who miss one. It is
+// its own file (rioamp.js), fetched only when it is switched on in Settings.
+const Skinned = {
+  on: store("rio.rioamp") === "1",
+  loading: null,
+  load() {
+    if (!this.loading) {
+      this.loading = new Promise((ok, bad) => {
+        const s = h("script", { src: "/static/rioamp.js" });
+        s.onload = ok;
+        s.onerror = () => { this.loading = null; s.remove(); bad(new Error("RioAmp couldn't be loaded")); };
+        document.head.append(s);
+      });
+    }
+    return this.loading;
+  },
+  async set(on) {
+    this.on = on;
+    store("rio.rioamp", on ? "1" : null);
+    if (on) {
+      await this.load();
+      if (this.on) await window.RioAmp.start();
+    } else if (window.RioAmp) {
+      window.RioAmp.stop();
+    }
+    this.changed();
+  },
+  // Settings shows which player and skin are in use.
+  watch: null,
+  changed() { if (this.watch) this.watch(); },
+};
+
 // ---------------------------------------------------------------- the play queue, wherever it is
 
 const Queue = {
@@ -719,6 +753,7 @@ function renderNowPlaying() {
   renderModes();
   NowPlaying.render(ns);
   renderProgress();
+  if (Skinned.on && window.RioAmp) window.RioAmp.poke();
 }
 
 function progressNow() {
@@ -2574,12 +2609,36 @@ async function viewSettings() {
           applyTheme(k);
           for (const b of seg.children) { b.classList.toggle("sel", b === e.currentTarget); b.setAttribute("aria-checked", String(b === e.currentTarget)); }
         } }, icon(ic), label)));
+  // The player bar: the usual one, or RioAmp and the skin it wears.
+  const skinRow = h("div", { class: "btn-row", style: "margin-top:12px" });
+  const playerSeg = h("div", { class: "segmented", role: "radiogroup", "aria-label": "Player" });
+  const renderPlayer = () => {
+    playerSeg.replaceChildren(...[[false, "Standard"], [true, "RioAmp"]].map(([on, label]) =>
+      h("button", { type: "button", role: "radio", "aria-checked": String(on === Skinned.on), class: on === Skinned.on ? "sel" : "",
+        onclick: () => Skinned.set(on).catch(fail) }, label)));
+    const amp = Skinned.on && window.RioAmp;
+    skinRow.hidden = !amp;
+    if (!amp) return;
+    skinRow.replaceChildren(...[
+      h("span", { class: "subtle" }, "Skin: ", h("b", {}, amp.skinName || "RioAmp")),
+      h("button", { class: "btn small", onclick: () => amp.chooseSkin() }, "Load a skin…"),
+      amp.skinName ? h("button", { class: "btn small", onclick: () => amp.defaultSkin() }, "Back to the RioAmp skin") : null,
+    ].filter(Boolean));
+  };
+  Skinned.watch = renderPlayer; // redrawn when it is switched or its skin changes
+  renderPlayer();
   return [
     h("h1", { style: "margin-bottom:22px" }, "Settings"),
     h("section", { class: "settings-section" },
       h("h2", {}, "Appearance"),
       seg,
       h("p", { class: "subtle" }, "System follows your device's light or dark setting. The choice is kept in this browser.")),
+    h("section", { class: "settings-section" },
+      h("h2", {}, "Player"),
+      playerSeg,
+      h("p", { class: "subtle" }, "RioAmp turns the player bar into a 1990s desktop player, and wears the classic skins (.wsz) made for the one it tips its hat to. ",
+        "It really kicks the alpaca's butt. The choice and the skin are kept in this browser."),
+      skinRow),
     h("section", { class: "settings-section" },
       h("div", { class: "head-row", style: "margin-bottom:6px" },
         h("div", {}, h("h2", { style: "margin:0" }, "Library"), h("div", { class: "subtle" }, `Music folder: `, h("code", {}, s.music_dir))),
@@ -2604,7 +2663,8 @@ async function viewSettings() {
     h("section", { class: "settings-section" },
       h("h2", {}, "Keyboard shortcuts"),
       h("div", { class: "list" }, [["Space", "Play / pause"], ["N / P", "Next / previous"], ["+ / −", "Volume"], ["S / R", "Shuffle / repeat"],
-        ["Q", "Now Playing and Up Next"], ["/", "Search"], ["Esc", "Close"]].map(([k, v]) =>
+        ["Q", "Now Playing and Up Next"], ["/", "Search"], ["Esc", "Close"],
+        ["Z X C V B", "In RioAmp: previous, play, pause, stop, next"]].map(([k, v]) =>
         h("div", { class: "row" }, h("span", {}, v), h("code", {}, k))))),
   ];
 }
@@ -2733,6 +2793,7 @@ for (const link of document.querySelectorAll("#sidebar a[href^='#/']")) {
 $("#scrim").addEventListener("click", () => toggleSidebar(false));
 
 showResume();
+if (Skinned.on) Skinned.set(true).catch(fail);
 route();
 pollStatus();
 pollReceivers();

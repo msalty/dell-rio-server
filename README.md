@@ -205,6 +205,17 @@ otherwise from the artist's newest album cover.
   can take it along. The move button in Now Playing and on each receiver card
   does the same: the queue and the position in the song go to the other
   player.
+- **RioAmp.** For those who miss the desktop players of the late 1990s:
+  **Settings › Player › RioAmp** turns the player bar into one. It really
+  kicks the alpaca's butt. It wears the classic skins (`.wsz`) made for the
+  player it tips its hat to: choose **Load a skin…** in Settings, or drop
+  one on the window. The skin is kept in that browser. Everything on the
+  window works wherever the music is playing, so there is no equaliser or
+  balance, and the spectrum is an animation. The title or **PL** opens Now
+  Playing, the eject button chooses where to play, **O** (or a right-click
+  or long press) opens its menu, **D** doubles its size on a computer, the
+  time switches to time remaining when clicked, and <kbd>Z</kbd>
+  <kbd>X</kbd> <kbd>C</kbd> <kbd>V</kbd> <kbd>B</kbd> work as they did.
 - **Playlists** made here are stored in the data volume (the music folder
   stays read-only) and appear on the receivers too. Drag to reorder them.
   `.m3u` playlists from the music folder are listed as well, read-only.

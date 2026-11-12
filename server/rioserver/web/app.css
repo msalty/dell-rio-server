@@ -537,3 +537,11 @@ html { touch-action: manipulation; -webkit-text-size-adjust: 100%; text-size-adj
 body.is-live #btn-shuffle, body.is-live #btn-prev, body.is-live #btn-next, body.is-live #btn-repeat,
 body.is-live .mode-shuffle, body.is-live .mode-repeat, body.is-live .np-main .skip,
 body.is-live .seek-input, body.is-live .t-dur { visibility: hidden; }
+
+/* RioAmp (rioamp.js): the player bar becomes a classic skinned player
+ * window. The window is a canvas drawn at the skin's own 275x116 and sized
+ * by the script, which also sets --player-h to its height; the bar around
+ * it takes the colour of the skin's edge. */
+body.rioamp .player { display: flex; justify-content: center; align-items: flex-start; gap: 0; padding: 0 0 var(--safe-b); background: var(--rioamp-edge, #1b252b); border-top: 0; transition: none; }
+body.rioamp .player > :not(.rioamp-win) { display: none; }
+.rioamp-win { display: block; flex: none; touch-action: none; cursor: default; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; outline: none; }
